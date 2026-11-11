@@ -40,8 +40,6 @@ pnpm build
 docker compose -f compose.dev.yaml config -q
 ```
 
-
-
 ## Tooling: this repository ships its own `.claude/`
 
 Open `waypoint-realtime-gateway/` as the workspace root to activate it. The `wp-rt-*` agents, the `/wp-*`

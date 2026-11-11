@@ -58,19 +58,18 @@ repository and nothing is inherited.
 - The parts shared with the other repositories are duplicated on purpose; a change to them is repeated
   in each repository through its own pull request.
 
-
 ## Commands and quality gates
 
 The scripts below are this repository's contract. While the repository is being bootstrapped,
 create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
 narrowest check that covers the change first, then widen:
 
-| Changed | Minimum check |
-| --- | --- |
-| Relays or rooms | `pnpm test -- src/relays` or `pnpm test -- src/connection` |
-| Presence | `pnpm test:integration -- presence` |
-| Any source | `pnpm format:check`, `pnpm lint`, `pnpm typecheck` |
-| Docs or agent instructions only | Scoped formatting and link review |
+| Changed                         | Minimum check                                              |
+| ------------------------------- | ---------------------------------------------------------- |
+| Relays or rooms                 | `pnpm test -- src/relays` or `pnpm test -- src/connection` |
+| Presence                        | `pnpm test:integration -- presence`                        |
+| Any source                      | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`         |
+| Docs or agent instructions only | Scoped formatting and link review                          |
 
 Report the commands you actually ran and their results; a check you did not run is reported as not
 run.
@@ -97,7 +96,6 @@ run.
   not read or write secret environment files; new variables are documented in `.env.example`.
 - Never edit generated trees (`dist/`, `node_modules/`, `coverage/`) or lockfiles by hand.
 - Never modify a sibling checkout (`../waypoint-*`) from a task in this repository.
-
 
 The agent hooks enforce most of these mechanically; a refused command is a signal to stop and ask,
 not to find another way around it.
