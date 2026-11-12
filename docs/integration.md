@@ -10,7 +10,7 @@ The gateway verifies the connection and room permissions, relays relevant events
 
 ## Rooms And Relays
 
-Source: `wp-rooms-and-relays` ([Claude](../.claude/skills/wp-rooms-and-relays/SKILL.md), [Codex](../.codex/skills/wp-rooms-and-relays/SKILL.md)).
+Source: `cw-rooms-and-relays` ([Claude](../.claude/skills/cw-rooms-and-relays/SKILL.md), [Codex](../.codex/skills/cw-rooms-and-relays/SKILL.md)).
 
 | Event                                 | Room                            | Message                    |
 | ------------------------------------- | ------------------------------- | -------------------------- |

@@ -1,6 +1,6 @@
-# waypoint-realtime-gateway: Claude Code tooling
+# cadenway-realtime-gateway: Claude Code tooling
 
-This `.claude/` folder ships the Claude Code tooling of waypoint-realtime-gateway: **9 agents**,
+This `.claude/` folder ships the Claude Code tooling of cadenway-realtime-gateway: **9 agents**,
 10 slash commands, 9 rules, 14 skills, 3 hooks, the project
 settings and launch configuration. The application launch requires the planned package scripts.
 
@@ -27,11 +27,11 @@ Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CL
 Start from this checkout and attach the peers you need, for example:
 
 ```powershell
-claude --add-dir ../waypoint-api-contracts ../waypoint-service-kit ../waypoint-webapp
+claude --add-dir ../cadenway-api-contracts ../cadenway-service-kit ../cadenway-webapp
 ```
 
-Their `.claude/agents/` are discovered too, so their `wp-*` roles become available. Peer checkouts
-are **read-only** from a waypoint-realtime-gateway session (the guard refuses edits there): change them in their
+Their `.claude/agents/` are discovered too, so their `cw-*` roles become available. Peer checkouts
+are **read-only** from a cadenway-realtime-gateway session (the guard refuses edits there): change them in their
 own session and pull request.
 
 ## Agents
@@ -42,30 +42,30 @@ check that writes files. No agent delegates further.
 
 | Agent | Responsibility | Model | Effort | Mode |
 | --- | --- | --- | --- | --- |
-| `wp-rt-connection-builder` | Handshake auth and rooms. | opus | high | Assigned writes |
-| `wp-rt-relay-builder` | Map broker events to room messages. | sonnet | high | Assigned writes |
-| `wp-rt-presence-builder` | Presence in Redis. | sonnet | medium | Assigned writes |
-| `wp-rt-test-writer` | Connection, relay and presence tests. | sonnet | high | Assigned writes |
-| `wp-rt-deploy-maintainer` | Deployment files and Traefik labels. | sonnet | medium | Assigned writes |
-| `wp-rt-security-auditor` | Handshake, room access, data exposure. | opus | xhigh | Read-only |
-| `wp-rt-performance-reviewer` | Fan-out, backpressure, memory. | sonnet | high | Read-only |
-| `wp-rt-architecture-reviewer` | No business data, contract-first events. | opus | high | Read-only |
-| `wp-rt-github-maintainer` | Workflows, templates and community files in .github/. | sonnet | medium | Assigned writes |
+| `cw-rt-connection-builder` | Handshake auth and rooms. | opus | high | Assigned writes |
+| `cw-rt-relay-builder` | Map broker events to room messages. | sonnet | high | Assigned writes |
+| `cw-rt-presence-builder` | Presence in Redis. | sonnet | medium | Assigned writes |
+| `cw-rt-test-writer` | Connection, relay and presence tests. | sonnet | high | Assigned writes |
+| `cw-rt-deploy-maintainer` | Deployment files and Traefik labels. | sonnet | medium | Assigned writes |
+| `cw-rt-security-auditor` | Handshake, room access, data exposure. | opus | xhigh | Read-only |
+| `cw-rt-performance-reviewer` | Fan-out, backpressure, memory. | sonnet | high | Read-only |
+| `cw-rt-architecture-reviewer` | No business data, contract-first events. | opus | high | Read-only |
+| `cw-rt-github-maintainer` | Workflows, templates and community files in .github/. | sonnet | medium | Assigned writes |
 
 ## Commands
 
 | Command | What it does | Runs |
 | --- | --- | --- |
-| `/wp-connection` | Change handshake auth or rooms. | `wp-rt-connection-builder` |
-| `/wp-relay` | Add or change a relay. | `wp-rt-relay-builder` |
-| `/wp-presence` | Change presence. | `wp-rt-presence-builder` |
-| `/wp-tests` | Write tests. | `wp-rt-test-writer` |
-| `/wp-deploy` | Change deployment files. | `wp-rt-deploy-maintainer` |
-| `/wp-security-review` | Audit connections and rooms. | `wp-rt-security-auditor` |
-| `/wp-perf-review` | Review fan-out and memory. | `wp-rt-performance-reviewer` |
-| `/wp-arch-review` | Review boundaries. | `wp-rt-architecture-reviewer` |
-| `/wp-github` | Change workflows, templates or community files in .github/. | `wp-rt-github-maintainer` |
-| `/wp-quality` | Run the local quality gate, stopping at the first failure. | runs the commands itself |
+| `/cw-connection` | Change handshake auth or rooms. | `cw-rt-connection-builder` |
+| `/cw-relay` | Add or change a relay. | `cw-rt-relay-builder` |
+| `/cw-presence` | Change presence. | `cw-rt-presence-builder` |
+| `/cw-tests` | Write tests. | `cw-rt-test-writer` |
+| `/cw-deploy` | Change deployment files. | `cw-rt-deploy-maintainer` |
+| `/cw-security-review` | Audit connections and rooms. | `cw-rt-security-auditor` |
+| `/cw-perf-review` | Review fan-out and memory. | `cw-rt-performance-reviewer` |
+| `/cw-arch-review` | Review boundaries. | `cw-rt-architecture-reviewer` |
+| `/cw-github` | Change workflows, templates or community files in .github/. | `cw-rt-github-maintainer` |
+| `/cw-quality` | Run the local quality gate, stopping at the first failure. | runs the commands itself |
 
 ## Rules
 
@@ -87,8 +87,8 @@ See [skills/](skills/) for the complete inventory, including the technology guid
 
 | Skill | Use |
 | --- | --- |
-| `wp-context` | What Waypoint is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
-| `wp-rooms-and-relays` | Room naming, join permissions and the event-to-room mapping of the realtime gateway, with the visibility rule for private spaces. |
+| `cw-context` | What Cadenway is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
+| `cw-rooms-and-relays` | Room naming, join permissions and the event-to-room mapping of the realtime gateway, with the visibility rule for private spaces. |
 
 ## Hooks
 

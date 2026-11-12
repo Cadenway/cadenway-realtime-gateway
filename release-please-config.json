@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "waypoint-realtime-gateway",
+      "package-name": "cadenway-realtime-gateway",
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false
     }

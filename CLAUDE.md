@@ -1,11 +1,11 @@
-# waypoint-realtime-gateway: Claude Code instructions
+# cadenway-realtime-gateway: Claude Code instructions
 
 > **Source of truth.** This file is the entry point for Claude Code. The normative rules live in
 > [AGENTS.md](AGENTS.md), imported below: read it, do not paraphrase it from memory.
 
 @AGENTS.md
 
-> **Read on demand, deliberately not `@`-imported**: `../waypoint-api-contracts/asyncapi/`, the [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N). Importing them would
+> **Read on demand, deliberately not `@`-imported**: `../cadenway-api-contracts/asyncapi/`, the [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N). Importing them would
 > cost context in every session. The path-scoped rules in `.claude/rules/` load automatically when
 > you open a matching file and carry the few things that must never be got wrong there.
 
@@ -20,14 +20,14 @@
 ## Boundaries (hard rules)
 
 - No database; Redis for presence and cross-instance fan-out.
-- Events are consumed through `@waypoint/nest-messaging` only; payloads are those of the installed `@waypoint/contracts`.
+- Events are consumed through `@cadenway/nest-messaging` only; payloads are those of the installed `@cadenway/contracts`.
 - A client joins a room only after checking its organization and its right to the list or task.
 - Exposed through Traefik on `realtime.<domain>` only.
 
 ## Target quality gate
 
 Use the [minimum checks by change](docs/development.md#minimum-checks-by-change) first.
-Run `/wp-quality` without arguments for the full local gate when applicable. Report unavailable
+Run `/cw-quality` without arguments for the full local gate when applicable. Report unavailable
 checks during bootstrap.
 
 ```bash
@@ -42,7 +42,7 @@ docker compose -f compose.dev.yaml config -q
 
 ## Tooling: this repository ships its own `.claude/`
 
-Open `waypoint-realtime-gateway/` as the workspace root to activate it. The `wp-rt-*` agents, the `/wp-*`
+Open `cadenway-realtime-gateway/` as the workspace root to activate it. The `cw-rt-*` agents, the `/cw-*`
 commands, the skills and the hooks are described in [.claude/README.md](.claude/README.md). Two things
 the session listing does not tell you:
 
@@ -55,5 +55,5 @@ the session listing does not tell you:
   registry publishing, and `format.mjs` formats supported files when its formatter is available.
   Apply the repository rules across tools. Resolve a refusal without bypassing the hook.
 
-The sibling repositories (`../waypoint-api-contracts`, `../waypoint-service-kit`, `../waypoint-webapp`, `../waypoint-ops`) are read-only references
+The sibling repositories (`../cadenway-api-contracts`, `../cadenway-service-kit`, `../cadenway-webapp`, `../cadenway-ops`) are read-only references
 from here; add them to the session (`--add-dir`) when a task needs to read them.

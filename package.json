@@ -1,7 +1,7 @@
 {
-  "name": "waypoint-realtime-gateway",
+  "name": "cadenway-realtime-gateway",
   "version": "0.0.0",
-  "description": "Waypoint realtime gateway: pushed changes and presence over WebSocket.",
+  "description": "Cadenway realtime gateway: pushed changes and presence over WebSocket.",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",

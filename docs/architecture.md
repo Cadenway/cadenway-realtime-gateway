@@ -10,7 +10,7 @@ The following architecture is the target recorded in [AGENTS.md](../AGENTS.md). 
 
 ## Purpose and target structure
 
-waypoint-realtime-gateway will push changes to browsers over WebSocket (`realtime.<domain>`): a task changed by someone else, a new notification (inbox badge), a due reminder, a status change coming from GitHub, presence. Local port 3001.
+cadenway-realtime-gateway will push changes to browsers over WebSocket (`realtime.<domain>`): a task changed by someone else, a new notification (inbox badge), a due reminder, a status change coming from GitHub, presence. Local port 3001.
 
 Planned event subscriptions include `task.*`, `comment.created`, `notification.created`, `reminder.due`, `git.*`, `user.status-changed`.
 
@@ -23,10 +23,10 @@ Planned event subscriptions include `task.*`, `comment.created`, `notification.c
 ## Boundaries
 
 - No database; Redis for presence and cross-instance fan-out.
-- Events are consumed through `@waypoint/nest-messaging` only; payloads are those of the installed `@waypoint/contracts`.
+- Events are consumed through `@cadenway/nest-messaging` only; payloads are those of the installed `@cadenway/contracts`.
 - A client joins a room only after checking its organization and its right to the list or task.
 - Exposed through Traefik on `realtime.<domain>` only.
 
 ## Cross-repository changes
 
-Each checkout owns its implementation and release. Use published `@waypoint/*` packages instead of sibling source imports or local dependency links. For contract changes, make the contract and generated package available first, then update the producing service, gateways and listeners, and finally the webapp. Each step should remain deployable independently.
+Each checkout owns its implementation and release. Use published `@cadenway/*` packages instead of sibling source imports or local dependency links. For contract changes, make the contract and generated package available first, then update the producing service, gateways and listeners, and finally the webapp. Each step should remain deployable independently.

@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "waypoint-realtime-gateway",
+      "name": "cadenway-realtime-gateway",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": [
         "start:dev"
