@@ -73,7 +73,7 @@ published `@waypoint/*` packages.
 pnpm format:check
 pnpm lint
 pnpm typecheck
-pnpm test -- src/<area>
+pnpm test src/<area>
 pnpm test:integration                    # Redis and NATS in Docker
 pnpm build
 docker compose -f compose.dev.yaml config -q

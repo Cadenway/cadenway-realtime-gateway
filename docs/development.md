@@ -41,12 +41,12 @@ The scripts below are this repository's contract. While the repository is being 
 create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
 narrowest check that covers the change first, then widen:
 
-| Changed                         | Minimum check                                              |
-| ------------------------------- | ---------------------------------------------------------- |
-| Relays or rooms                 | `pnpm test -- src/relays` or `pnpm test -- src/connection` |
-| Presence                        | `pnpm test:integration -- presence`                        |
-| Any source                      | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`         |
-| Docs or agent instructions only | Scoped formatting and link review                          |
+| Changed                         | Minimum check                                        |
+| ------------------------------- | ---------------------------------------------------- |
+| Relays or rooms                 | `pnpm test src/relays` or `pnpm test src/connection` |
+| Presence                        | `pnpm test:integration presence`                     |
+| Any source                      | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`   |
+| Docs or agent instructions only | Scoped formatting and link review                    |
 
 Report the commands you actually ran and their results; a check you did not run is reported as not
 run.
