@@ -1,0 +1,31 @@
+# Dependencies of cadenway-realtime-gateway for working on it alone: Redis (presence and
+# cross-instance fan-out) and NATS JetStream (the events it relays). The gateway itself runs on the
+# host with `pnpm start:dev`.
+name: cadenway-realtime-gateway-dev
+
+services:
+  redis:
+    image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
+    ports:
+      - '127.0.0.1:${DEV_REDIS_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2.15.2-alpine@sha256:afae2fdbe2e326c65e1246cb83b9d05d319188734f3bd577ac8072daae78a10f
+    command: ['--jetstream', '--store_dir', '/data', '--http_port', '8222']
+    ports:
+      - '127.0.0.1:${DEV_NATS_PORT:-4222}:4222'
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8222/healthz']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  nats-data:

@@ -1,6 +1,6 @@
-# waypoint-realtime-gateway documentation
+# cadenway-realtime-gateway documentation
 
-Planned role: waypoint-realtime-gateway pushes changes to browsers over WebSocket (`realtime.<domain>`): a task changed by someone else, a new notification (inbox badge), a due reminder, a status change coming from GitHub, presence. Local port 3001.
+Planned role: cadenway-realtime-gateway pushes changes to browsers over WebSocket (`realtime.<domain>`): a task changed by someone else, a new notification (inbox badge), a due reminder, a status change coming from GitHub, presence. Local port 3001.
 
 ## Current status
 
