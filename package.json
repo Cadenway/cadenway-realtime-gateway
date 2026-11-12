@@ -1,6 +1,6 @@
 {
   "name": "cadenway-realtime-gateway",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Cadenway realtime gateway: pushed changes and presence over WebSocket.",
   "private": true,
   "license": "UNLICENSED",
