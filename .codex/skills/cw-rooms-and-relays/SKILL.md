@@ -18,3 +18,29 @@ This is the target protocol. Confirm event names and payloads against the instal
 
 Private spaces: a member who is not part of the space never receives its task events, even in the
 organization room.
+
+## Personal room
+
+The member's personal room is `member:<id>`. A socket joins the room of its authenticated member
+only.
+
+## Envelope
+
+Every message leaves in the envelope `{ id, type, at, version, data }`. The Message column of the
+table is `data`.
+
+## Handshake ticket
+
+The client authenticates with a single-use ticket valid 60 seconds, passed in `auth.token`. A ticket
+that is unknown, expired or already used closes the socket.
+
+## Revocation
+
+The gateway listens to `session.revoked`, `member.removed` and role changes, and closes the sockets
+concerned.
+
+## Reconnection
+
+No connection state recovery: it is incompatible with the Redis adapter in place. After a
+reconnection the client rejoins its rooms and refetches through the API; the gateway replays
+nothing.

@@ -1,7 +1,7 @@
 # cadenway-realtime-gateway: Claude Code tooling
 
 This `.claude/` folder ships the Claude Code tooling of cadenway-realtime-gateway: **9 agents**,
-10 slash commands, 9 rules, 14 skills, 3 hooks, the project
+10 slash commands, 9 rules, 15 skills, 3 hooks, the project
 settings and launch configuration. The application launch requires the planned package scripts.
 
 Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CLAUDE.md](../CLAUDE.md)
@@ -89,6 +89,7 @@ See [skills/](skills/) for the complete inventory, including the technology guid
 | --- | --- |
 | `cw-context` | What Cadenway is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
 | `cw-rooms-and-relays` | Room naming, join permissions and the event-to-room mapping of the realtime gateway, with the visibility rule for private spaces. |
+| `cw-logging-and-tracing` | Log fields, redaction, trace propagation, the ESM start-up of OpenTelemetry and the metrics of cadenway-realtime-gateway. |
 
 ## Hooks
 
