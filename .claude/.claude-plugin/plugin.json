@@ -1,7 +1,7 @@
 {
   "name": "cadenway-realtime-gateway",
   "version": "0.1.0",
-  "description": "cadenway-realtime-gateway tooling: 9 cw-rt-* agents (connection, relay and presence builders plus read-only security, performance and architecture reviewers for the WebSocket gateway, plus a .github maintainer), 10 /cw-* commands, 9 path-scoped rules, 14 skills, and the guard, git-guard and format hooks. The plugin root is this .claude/ folder; the hooks only act inside a cadenway-realtime-gateway checkout.",
+  "description": "cadenway-realtime-gateway tooling: 9 cw-rt-* agents (connection, relay and presence builders plus read-only security, performance and architecture reviewers for the WebSocket gateway, plus a .github maintainer), 10 /cw-* commands, 9 path-scoped rules, 15 skills, and the guard, git-guard and format hooks. The plugin root is this .claude/ folder; the hooks only act inside a cadenway-realtime-gateway checkout.",
   "author": {
     "name": "Valentin FORTIN"
   }
