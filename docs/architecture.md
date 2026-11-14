@@ -4,9 +4,7 @@
 
 ## Status
 
-At the time this documentation was written, this checkout has no `package.json`, application source tree, or GitHub workflow files. The target architecture, scripts, and workflows in this guide must be created and verified during bootstrap.
-
-The following architecture is the target recorded in [AGENTS.md](../AGENTS.md). Paths and integrations are design boundaries, not evidence that files or services already exist.
+The checkout contains a NestJS bootstrap and health endpoints. The following ownership map governs gateway capabilities as they are implemented.
 
 ## Purpose and target structure
 
@@ -15,6 +13,8 @@ cadenway-realtime-gateway will push changes to browsers over WebSocket (`realtim
 Planned event subscriptions include `task.*`, `comment.created`, `notification.created`, `reminder.due`, `git.*`, `user.status-changed`.
 
 ## Architectural ownership
+
+Follow the [Cadenway NestJS architecture reference](https://github.com/Cadenway/cadenway-service-kit/blob/main/docs/hexagonal-architecture.md) for ports, adapters, dependency direction, naming and test placement.
 
 - `src/connection/`: handshake authentication, rooms.
 - `src/relays/`: one relay per event family.

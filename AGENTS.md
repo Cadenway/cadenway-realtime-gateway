@@ -33,6 +33,8 @@ Planned event subscriptions include `task.*`, `comment.created`, `notification.c
 
 ## Architectural ownership
 
+See the [Cadenway NestJS architecture reference](https://github.com/Cadenway/cadenway-service-kit/blob/main/docs/hexagonal-architecture.md) for dependency and test rules.
+
 - `src/connection/`: handshake authentication, rooms.
 - `src/relays/`: one relay per event family.
 - `src/presence/`: presence in Redis.

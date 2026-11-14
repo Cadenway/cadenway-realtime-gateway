@@ -4,6 +4,9 @@ import { RealtimeGateway } from './connection/realtime.gateway.js';
 import { HealthController } from './health/health.controller.js';
 
 /**
+ * Class AppModule
+ *
+ * @description
  * Root module of the gateway.
  *
  * The modules of `src/connection/`, `src/relays/` and `src/presence/` are registered here as they
