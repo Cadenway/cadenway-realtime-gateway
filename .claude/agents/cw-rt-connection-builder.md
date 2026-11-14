@@ -50,7 +50,7 @@ Load them with the `Skill` tool when their subject comes up (if the tool is unav
 
 ## Procedure
 
-1. Verify the session token at handshake; refuse otherwise.
+1. Redeem the single-use ticket at handshake (cadenway-identity-service, through the generated internal client); refuse otherwise.
 2. Join the organization room automatically; list and task rooms only after a permission check.
 3. Leave rooms on logout, organization switch and token expiry.
 

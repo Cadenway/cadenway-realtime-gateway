@@ -12,7 +12,7 @@
 ## TL;DR for every task
 
 1. The gateway pushes what changed; it never stores business data and never decides.
-2. Connections authenticate at handshake with the session token; rooms are per organization, list and open task.
+2. Connections authenticate at handshake with a single-use ticket valid 60 seconds, issued through the API gateway and redeemed at cadenway-identity-service; rooms are per organization, list and open task.
 3. Relays map a broker event to a room message; only events the client may see are relayed.
 4. Presence (online, away, do not disturb, invisible) lives in Redis with expiry.
 5. Scale out through the Redis adapter; no in-memory state that a second instance would miss.
