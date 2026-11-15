@@ -17,10 +17,12 @@ paths:
   development one, so `.env.example` leaves it empty and says how to generate one.
 - `deploy/compose.yaml` declares the `environment` entries cadenway-ops lists for the realtime
   gateway in `docs/service-environment.md`; a new entry is released after its variable exists on
-  the hosts. `NATS_URL`, `NATS_USER` and `NATS_PASSWORD` are declared before any code reads them,
-  for `@cadenway/nest-messaging`.
-- The `CMD` preloads the telemetry: `node --experimental-loader=@cadenway/nest-common/hook.mjs
-  --import ./dist/telemetry.js dist/main.js`.
+  the hosts. `NATS_URL`, `NATS_USER` and `NATS_PASSWORD` are read by `@cadenway/nest-messaging`.
+- The `CMD` caps the heap and preloads the telemetry: `node --max-old-space-size=160 --import
+  @cadenway/nest-common/register --import ./dist/telemetry.js dist/main.js`; `pnpm start:dev`
+  runs the same flags.
+- `compose.dev.yaml` runs NATS with authentication, as every environment: the user
+  `realtime-gateway` of cadenway-ops (`nats/nats-server.conf`) and the `EVENTS` stream.
 - Healthcheck on `/health/ready`; explicit memory limit; non-root user; pinned base image.
 - Local port: 3001.
 - The private `@cadenway/*` packages reach the image build through the `npmrc` build secret, mounted by the install steps only: never an `ARG`, an `ENV` or a copied file.

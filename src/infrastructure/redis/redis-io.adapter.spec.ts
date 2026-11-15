@@ -1,7 +1,7 @@
 import type { INestApplicationContext } from '@nestjs/common';
+import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
 
-import type { RedisConnection } from './redis-connection.js';
 import { RedisIoAdapter } from './redis-io.adapter.js';
 
 /**
@@ -13,11 +13,9 @@ import { RedisIoAdapter } from './redis-io.adapter.js';
  *
  * @type {RedisIoAdapter}
  */
-const adapter: RedisIoAdapter = new RedisIoAdapter(
-  {} as INestApplicationContext,
-  {} as RedisConnection,
-  ['https://app.cadenway.test'],
-);
+const adapter: RedisIoAdapter = new RedisIoAdapter({} as INestApplicationContext, {} as Redis, [
+  'https://app.cadenway.test',
+]);
 
 describe('RedisIoAdapter', () => {
   it('accepts the exact origin of the web application', () => {

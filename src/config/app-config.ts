@@ -4,6 +4,8 @@ import {
   type BaseConfig,
   type InternalTokenSignerConfig,
 } from '@cadenway/nest-common';
+import { redisConfigShape, type RedisConfig } from '@cadenway/nest-common/redis';
+import { messagingConfigShape, type MessagingConfig } from '@cadenway/nest-messaging';
 import { z } from 'zod';
 
 /**
@@ -17,23 +19,15 @@ import { z } from 'zod';
  * Besides the variables of every Cadenway backend (`NODE_ENV`, `PORT`, `LOG_LEVEL`, `LOG_PRETTY`),
  * the gateway signs the internal token of the calls it makes to cadenway-identity-service and
  * cadenway-task-service (`INTERNAL_TOKEN_ISSUER`, `INTERNAL_TOKEN_PRIVATE_JWK`) and verifies none:
- * it authenticates the sockets itself. `NATS_URL`, `NATS_USER` and `NATS_PASSWORD` are not read
- * here: `@cadenway/nest-messaging` reads them once the gateway consumes events.
+ * it authenticates the sockets itself. The shapes of the kit validate the two connections:
+ * `REDIS_URL` (`@cadenway/nest-common/redis`), the Redis that carries the fan-out of the Socket.IO
+ * adapter between instances and, later, presence; `NATS_URL`, `NATS_USER` and `NATS_PASSWORD`
+ * (`@cadenway/nest-messaging`), the broker the gateway will consume events from, as the NATS user
+ * `realtime-gateway` of cadenway-ops.
  */
-export interface AppConfig extends BaseConfig, InternalTokenSignerConfig {
+export interface AppConfig
+  extends BaseConfig, InternalTokenSignerConfig, RedisConfig, MessagingConfig {
   // #region Properties
-  /**
-   * Property REDIS_URL
-   *
-   * @description
-   * Address of the Redis server, `redis://` or `rediss://`, that carries the fan-out of the
-   * Socket.IO adapter between instances and, later, presence.
-   *
-   * @type {string}
-   * @readonly
-   */
-  readonly REDIS_URL: string;
-
   /**
    * Property ALLOWED_ORIGINS
    *
@@ -141,15 +135,18 @@ const allowedOriginsSchema: z.ZodType<readonly string[]> = z
  * Zod schema of the environment of the realtime gateway, for `loadConfig` and
  * `ConfigModule.forRoot`. `INTERNAL_TOKEN_ISSUER` and `INTERNAL_TOKEN_PRIVATE_JWK` keep the rules of
  * `@cadenway/nest-common`: a lowercase kebab-case name and one line of JSON holding an Ed25519
- * private JSON Web Key with its `kid`. No variable of this schema has a default except those of
- * `baseConfigShape`.
+ * private JSON Web Key with its `kid`. `REDIS_URL` and the three NATS variables keep the rules of
+ * the kit shapes; `NATS_USER` and `NATS_PASSWORD` are optional there, for an anonymous local broker
+ * only: every broker of cadenway-ops, and the one of `compose.dev.yaml`, refuses a connection
+ * without them. No variable of this schema has a default except those of `baseConfigShape`.
  *
  * @type {z.ZodType<AppConfig>}
  */
 export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   ...baseConfigShape,
   ...internalTokenSignerConfigShape,
-  REDIS_URL: z.url({ protocol: /^rediss?$/u, error: 'Expected a redis:// or rediss:// URL.' }),
+  ...redisConfigShape,
+  ...messagingConfigShape,
   ALLOWED_ORIGINS: allowedOriginsSchema,
   IDENTITY_SERVICE_URL: serviceUrlSchema,
   TASK_SERVICE_URL: serviceUrlSchema,

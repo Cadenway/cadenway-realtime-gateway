@@ -44,6 +44,9 @@ function validEnvironment(overrides: Record<string, string> = {}): Record<string
     INTERNAL_TOKEN_PRIVATE_JWK: privateJwk(),
     IDENTITY_SERVICE_URL: 'http://localhost:3010',
     TASK_SERVICE_URL: 'http://localhost:3013',
+    NATS_URL: 'nats://localhost:4222',
+    NATS_USER: 'realtime-gateway',
+    NATS_PASSWORD: 'realtimegateway',
     ...overrides,
   };
 }
@@ -83,19 +86,36 @@ describe('appConfigSchema', () => {
       INTERNAL_TOKEN_ISSUER: 'realtime-gateway',
       IDENTITY_SERVICE_URL: 'http://localhost:3010',
       TASK_SERVICE_URL: 'http://localhost:3013',
+      NATS_URL: 'nats://localhost:4222',
+      NATS_USER: 'realtime-gateway',
+      NATS_PASSWORD: 'realtimegateway',
     });
     expect(config.ALLOWED_ORIGINS).toEqual(['https://app.cadenway.test']);
     expect(config.INTERNAL_TOKEN_PRIVATE_JWK).toMatchObject({ kty: 'OKP', crv: 'Ed25519' });
   });
 
-  it('ignores the broker variables, which the messaging package reads later', () => {
+  it('reads the broker of the gateway with the rules of the messaging package', () => {
     const config: Readonly<AppConfig> = loadConfig(
       appConfigSchema,
-      validEnvironment({ NATS_URL: 'not a url', NATS_USER: 'realtime-gateway' }),
+      validEnvironment({ NATS_URL: 'nats://nats-1:4222, tls://nats-2:4222' }),
     );
 
-    expect(config).not.toHaveProperty('NATS_URL');
-    expect(config).not.toHaveProperty('NATS_USER');
+    expect(config.NATS_URL).toBe('nats://nats-1:4222, tls://nats-2:4222');
+    expect(configIssues(validEnvironment({ NATS_URL: 'http://localhost:4222' }))).toEqual([
+      'NATS_URL: Expected one or several comma-separated nats:// or tls:// URLs.',
+    ]);
+    expect(configIssues(validEnvironment({ NATS_USER: 'realtime gateway' }))).toEqual([
+      'NATS_USER: Expected a NATS user name.',
+    ]);
+  });
+
+  it('never prints the broker password', () => {
+    const issues: readonly string[] = configIssues(
+      validEnvironment({ NATS_URL: 'not-a-url', NATS_PASSWORD: 'brokerpassword42' }),
+    );
+
+    expect(issues).toEqual([expect.stringMatching(/^NATS_URL: /u)]);
+    expect(issues.join('\n')).not.toContain('brokerpassword42');
   });
 
   it('refuses to start without the signing key and names the variable', () => {
@@ -133,6 +153,7 @@ describe('appConfigSchema', () => {
       'INTERNAL_TOKEN_ISSUER',
       'INTERNAL_TOKEN_PRIVATE_JWK',
       'REDIS_URL',
+      'NATS_URL',
       'ALLOWED_ORIGINS',
       'IDENTITY_SERVICE_URL',
       'TASK_SERVICE_URL',

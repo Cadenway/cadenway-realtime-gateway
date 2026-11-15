@@ -36,7 +36,7 @@ Requirements: Node.js LTS and pnpm (versions in `package.json`), and Docker.
    ```bash
    pnpm install
    cp .env.example .env
-   docker compose -f compose.dev.yaml up -d   # Redis and NATS
+   docker compose -f compose.dev.yaml up -d   # Redis, NATS and its EVENTS stream
    pnpm start:dev                             # http://localhost:3001, reads .env
    ```
 
@@ -54,7 +54,15 @@ Requirements: Node.js LTS and pnpm (versions in `package.json`), and Docker.
    between single quotes.
 
 Every variable is validated at start-up: a missing or invalid one stops the process with a
-`ConfigError` that names it and never prints its value. `.env.example` describes each of them.
+`ConfigError` that names it and never prints its value, written as one JSON line on the standard
+error. `.env.example` describes each of them.
+
+The NATS of `compose.dev.yaml` checks users as every environment does (`nats/nats-server.conf`):
+the gateway connects as `realtime-gateway` with the permissions cadenway-ops gives it, and
+receives its replies under `_INBOX.realtime-gateway` only. Its `nats-streams` service creates the
+`EVENTS` stream once with the `admin` user: the gateway may not create a stream and refuses to
+start without it.
+
 A browser page opens a socket only from an origin listed in `ALLOWED_ORIGINS`; add the address of
 a local web application server there.
 
@@ -86,7 +94,7 @@ pnpm lint
 pnpm typecheck
 pnpm test:architecture
 pnpm test:coverage
-pnpm test:integration                    # disposable Redis in Docker
+pnpm test:integration                    # disposable Redis and NATS in Docker
 pnpm build
 docker compose -f compose.dev.yaml config -q
 ```

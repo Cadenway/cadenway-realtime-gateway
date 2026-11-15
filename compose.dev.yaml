@@ -1,7 +1,8 @@
 # Dependencies of cadenway-realtime-gateway for working on it alone: Redis (presence and
 # cross-instance fan-out) and NATS JetStream (the events it will relay). The gateway itself runs on
 # the host with `pnpm start:dev`, which reads .env (copied from .env.example, plus a development
-# signing key). The integration tests start this same Redis image in a disposable container.
+# signing key). The integration tests start the same Redis and NATS images in disposable
+# containers, the broker with the same nats/nats-server.conf.
 name: cadenway-realtime-gateway-dev
 
 services:
@@ -15,18 +16,48 @@ services:
       timeout: 3s
       retries: 10
 
+  # The broker with authentication, as on every environment: the user `realtime-gateway` with the
+  # permissions cadenway-ops gives it, and `admin`, which creates the stream (nats/nats-server.conf).
   nats:
     image: nats:2.15.2-alpine@sha256:afae2fdbe2e326c65e1246cb83b9d05d319188734f3bd577ac8072daae78a10f
-    command: ['--jetstream', '--store_dir', '/data', '--http_port', '8222']
+    command: ['--config', '/etc/nats/nats-server.conf']
+    environment:
+      # Passwords of this local broker only, letters as the broker requires; NATS_PASSWORD of
+      # .env.example is the second one. Every environment has its own in the secrets of
+      # cadenway-ops.
+      NATS_ADMIN_PASSWORD: admin
+      REALTIME_GATEWAY_NATS_PASSWORD: realtimegateway
     ports:
       - '127.0.0.1:${DEV_NATS_PORT:-4222}:4222'
     volumes:
       - nats-data:/data
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8222/healthz']
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # Creates the EVENTS stream once, with the settings of cadenway-ops
+  # (compose/nats/ensure-streams.sh), then exits: the gateway may not create a stream and refuses
+  # to start without it. An existing stream is left as it is.
+  nats-streams:
+    image: natsio/nats-box:0.20.2-nonroot@sha256:d00bffed51ea1a29e58852698bde37020d306af55585882f88dbcf09dd86f5fe
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - >-
+        nats stream info EVENTS >/dev/null 2>&1 ||
+        nats stream add EVENTS --defaults --subjects 'evt.>' --description 'Every Cadenway event.'
+        --storage file --retention limits --discard old --replicas 1 --max-age 7d --max-bytes 1GiB
+        --dupe-window 2m --max-msgs=-1 --max-msgs-per-subject=-1 --max-msg-size=-1 >/dev/null
+    environment:
+      NATS_URL: nats://nats:4222
+      NATS_USER: admin
+      NATS_PASSWORD: admin
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: 'no'
 
 volumes:
   nats-data:

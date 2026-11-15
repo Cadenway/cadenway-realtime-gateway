@@ -2,16 +2,23 @@ import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
+import { loadConfig } from '@cadenway/nest-common';
+import { MessagingModule } from '@cadenway/nest-messaging';
+import type { INestApplicationContext } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
 import { Redis } from 'ioredis';
 import { io, type Socket } from 'socket.io-client';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
+import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { AppConfig } from '../src/config/app-config.js';
+import { appConfigSchema, type AppConfig } from '../src/config/app-config.js';
+import { createRealtimeApplication } from '../src/realtime-application.js';
 
 /**
  * Constant ALLOWED_ORIGIN
@@ -51,36 +58,180 @@ const REFUSED_ORIGINS: readonly string[] = [
 const POLLING_HANDSHAKE = '/socket.io/?EIO=4&transport=polling';
 
 /**
- * Function redisImage
+ * Constant NATS_USER
  *
  * @description
- * Reads the Redis image of `compose.dev.yaml`, so the tests run the image the workstation runs and
- * the pin Renovate updates lives in one file.
+ * NATS user of the gateway, the one cadenway-ops declares and `nats/nats-server.conf` copies.
  *
- * @returns {string} The image reference, tag and digest.
- * @throws {Error} When `compose.dev.yaml` names no Redis image.
+ * @type {string}
  */
-function redisImage(): string {
+const NATS_USER = 'realtime-gateway';
+
+/**
+ * Constant NATS_CONFIG_PATH
+ *
+ * @description
+ * Path of the broker configuration inside the NATS container, as in `compose.dev.yaml`.
+ *
+ * @type {string}
+ */
+const NATS_CONFIG_PATH = '/etc/nats/nats-server.conf';
+
+/**
+ * Interface BrokerConnection
+ *
+ * @description
+ * What the monitoring endpoint of the broker (`/connz?auth=true&subs=true`) reports of one client
+ * connection, as far as these tests read it.
+ */
+interface BrokerConnection {
+  // #region Properties
+  /**
+   * Property name
+   *
+   * @description
+   * Name the client announced, `realtime-gateway` for the gateway.
+   *
+   * @type {string | undefined}
+   * @readonly
+   */
+  readonly name?: string;
+
+  /**
+   * Property authorized_user
+   *
+   * @description
+   * NATS user the connection authenticated as.
+   *
+   * @type {string | undefined}
+   * @readonly
+   */
+  readonly authorized_user?: string;
+
+  /**
+   * Property subscriptions_list
+   *
+   * @description
+   * Subjects the connection subscribes to.
+   *
+   * @type {string[] | undefined}
+   * @readonly
+   */
+  readonly subscriptions_list?: string[];
+  // #endregion
+}
+
+/**
+ * Function composeImage
+ *
+ * @description
+ * Reads an image of `compose.dev.yaml`, so the tests run the images the workstation runs and the
+ * pins Renovate updates live in one file.
+ *
+ * @param {'redis' | 'nats'} repository - Image repository.
+ * @returns {string} The image reference, tag and digest.
+ * @throws {Error} When `compose.dev.yaml` names no image of that repository.
+ */
+function composeImage(repository: 'redis' | 'nats'): string {
   const compose: string = readFileSync(new URL('../compose.dev.yaml', import.meta.url), 'utf8');
-  const image: string | undefined = /^\s*image:\s*(redis:\S+)\s*$/mu.exec(compose)?.[1];
+  const pattern = new RegExp(String.raw`^\s*image:\s*(${repository}:\S+)\s*$`, 'mu');
+  const image: string | undefined = pattern.exec(compose)?.[1];
   if (image === undefined) {
-    throw new Error('compose.dev.yaml names no Redis image.');
+    throw new Error(`compose.dev.yaml names no ${repository} image.`);
   }
   return image;
+}
+
+/**
+ * Function brokerPassword
+ *
+ * @description
+ * Generates a NATS password for one run: letters and digits starting with a letter, the only
+ * values the broker reads safely from its configuration. No password of a test is committed.
+ *
+ * @returns {string} The password.
+ */
+function brokerPassword(): string {
+  return `p${randomBytes(12).toString('hex')}`;
+}
+
+/**
+ * Function startBroker
+ *
+ * @description
+ * Starts the broker of `compose.dev.yaml` in a disposable container: its image, its
+ * `nats/nats-server.conf` (the users `realtime-gateway` and `admin`, with the permissions and the
+ * inbox prefix rule of cadenway-ops) and passwords generated for this run.
+ *
+ * @param {string} adminPassword - Password of `admin`.
+ * @param {string} gatewayPassword - Password of `realtime-gateway`.
+ * @returns {Promise<StartedTestContainer>} The running broker, client and monitoring ports exposed.
+ */
+async function startBroker(
+  adminPassword: string,
+  gatewayPassword: string,
+): Promise<StartedTestContainer> {
+  return new GenericContainer(composeImage('nats'))
+    .withCopyFilesToContainer([
+      {
+        source: fileURLToPath(new URL('../nats/nats-server.conf', import.meta.url)),
+        target: NATS_CONFIG_PATH,
+      },
+    ])
+    .withEnvironment({
+      NATS_ADMIN_PASSWORD: adminPassword,
+      REALTIME_GATEWAY_NATS_PASSWORD: gatewayPassword,
+    })
+    .withCommand(['--config', NATS_CONFIG_PATH])
+    .withExposedPorts(4222, 8222)
+    .withWaitStrategy(Wait.forLogMessage(/Server is ready/u))
+    .start();
+}
+
+/**
+ * Function createStreams
+ *
+ * @description
+ * Creates the streams as cadenway-ops does, with the `admin` user: the gateway may not create one
+ * and refuses to start without `EVENTS`. `manageStreams` of `@cadenway/nest-messaging` applies the
+ * settings of cadenway-ops to `EVENTS`, `EVENTS_RESTRICTED` and `EVENTS_DLQ`.
+ *
+ * @param {string} servers - Address of the broker.
+ * @param {string} adminPassword - Password of `admin`.
+ * @returns {Promise<void>} Resolves once the streams exist and the connection is closed.
+ */
+async function createStreams(servers: string, adminPassword: string): Promise<void> {
+  const context: INestApplicationContext = await NestFactory.createApplicationContext(
+    MessagingModule.forRoot({
+      service: 'stream-setup',
+      servers,
+      user: 'admin',
+      password: adminPassword,
+      manageStreams: true,
+    }),
+    { logger: false },
+  );
+  await context.close();
 }
 
 /**
  * Function testEnvironment
  *
  * @description
- * Environment of the gateway under test: the disposable Redis, a signing key generated for this
- * run (no key is ever committed) and service addresses nothing listens on, since nothing calls a
- * service yet.
+ * Environment of the gateway under test: the disposable Redis and broker, a signing key generated
+ * for this run (no key is ever committed) and service addresses nothing listens on, since nothing
+ * calls a service yet.
  *
  * @param {string} redisUrl - Address of the disposable Redis.
+ * @param {string} natsUrl - Address of the disposable broker.
+ * @param {string} natsPassword - Password of the NATS user of the gateway.
  * @returns {Record<string, string>} The variables to stub.
  */
-function testEnvironment(redisUrl: string): Record<string, string> {
+function testEnvironment(
+  redisUrl: string,
+  natsUrl: string,
+  natsPassword: string,
+): Record<string, string> {
   const jwk: JsonWebKey = generateKeyPairSync('ed25519').privateKey.export({ format: 'jwk' });
   const privateJwk: string = JSON.stringify({
     kty: 'OKP',
@@ -99,6 +250,9 @@ function testEnvironment(redisUrl: string): Record<string, string> {
     INTERNAL_TOKEN_PRIVATE_JWK: privateJwk,
     IDENTITY_SERVICE_URL: 'http://127.0.0.1:1',
     TASK_SERVICE_URL: 'http://127.0.0.1:1',
+    NATS_URL: natsUrl,
+    NATS_USER,
+    NATS_PASSWORD: natsPassword,
   };
 }
 
@@ -135,7 +289,6 @@ async function startApplication(
   config: Readonly<AppConfig>,
   logLines: string[],
 ): Promise<{ app: NestExpressApplication; url: string }> {
-  const { createRealtimeApplication } = await import('../src/realtime-application.js');
   const app: NestExpressApplication = await createRealtimeApplication(config, lineSink(logLines));
   await app.listen(0, '127.0.0.1');
   return { app, url: await app.getUrl() };
@@ -185,8 +338,8 @@ async function handshake(
  * Function waitFor
  *
  * @description
- * Polls a probe until it returns the expected value or the time runs out: Redis connections and
- * subscriptions settle a moment after the application starts or stops.
+ * Polls a probe until it returns the expected value or the time runs out: Redis and NATS
+ * connections and subscriptions settle a moment after the application starts or stops.
  *
  * @param {() => Promise<T>} probe - Reads the current value.
  * @param {T} expected - Value to wait for.
@@ -204,9 +357,13 @@ async function waitFor<T>(probe: () => Promise<T>, expected: T): Promise<T> {
 
 describe('realtime gateway start-up', () => {
   const logLines: string[] = [];
+  const gatewayPassword: string = brokerPassword();
   let redis: StartedRedisContainer;
   let redisStopped = false;
   let redisAddress: string;
+  let nats: StartedTestContainer;
+  let natsStopped = false;
+  let natsMonitoring: string;
   let observer: Redis;
   let config: Readonly<AppConfig>;
   let app: NestExpressApplication;
@@ -255,19 +412,41 @@ describe('realtime gateway start-up', () => {
     return Array.isArray(reply) ? Number(reply[1]) : 0;
   }
 
+  /**
+   * Function brokerConnections
+   *
+   * @description
+   * Reads the client connections of the broker from its monitoring endpoint, with their
+   * authenticated user and their subscriptions.
+   *
+   * @returns {Promise<BrokerConnection[]>} One entry per client connection.
+   */
+  async function brokerConnections(): Promise<BrokerConnection[]> {
+    const response: Response = await fetch(`${natsMonitoring}/connz?auth=true&subs=true`);
+    const body = (await response.json()) as { connections?: BrokerConnection[] };
+    return body.connections ?? [];
+  }
+
   beforeAll(async () => {
-    redis = await new RedisContainer(redisImage()).start();
+    const adminPassword: string = brokerPassword();
+    [redis, nats] = await Promise.all([
+      new RedisContainer(composeImage('redis')).start(),
+      startBroker(adminPassword, gatewayPassword),
+    ]);
     redisAddress = `${redis.getHost()}:${String(redis.getMappedPort(6379))}`;
+    const natsUrl = `nats://${nats.getHost()}:${String(nats.getMappedPort(4222))}`;
+    natsMonitoring = `http://${nats.getHost()}:${String(nats.getMappedPort(8222))}`;
+    await createStreams(natsUrl, adminPassword);
     observer = new Redis(redis.getConnectionUrl());
     // The observer loses Redis with the gateway, at the end; its reconnection errors say nothing.
     observer.on('error', () => undefined);
-    for (const [name, value] of Object.entries(testEnvironment(redis.getConnectionUrl()))) {
+    // `ConfigModule` validates the environment of the process again when the application is
+    // created, so the variables are stubbed as well as passed.
+    for (const [name, value] of Object.entries(
+      testEnvironment(redis.getConnectionUrl(), natsUrl, gatewayPassword),
+    )) {
       vi.stubEnv(name, value);
     }
-    // The application module validates the environment when it is declared: import it only once
-    // the environment is in place.
-    const { loadConfig } = await import('@cadenway/nest-common');
-    const { appConfigSchema } = await import('../src/config/app-config.js');
     config = loadConfig(appConfigSchema);
     ({ app, url } = await startApplication(config, logLines));
     server = app.getHttpServer();
@@ -281,6 +460,9 @@ describe('realtime gateway start-up', () => {
     if (!redisStopped) {
       await redis.stop();
     }
+    if (!natsStopped) {
+      await nats.stop();
+    }
     vi.unstubAllEnvs();
   });
 
@@ -288,11 +470,28 @@ describe('realtime gateway start-up', () => {
     await request(server).get('/health/live').expect(200);
   });
 
-  it('is ready while Redis answers', async () => {
+  it('is ready while Redis and NATS answer', async () => {
     expect(await readinessStatus(200)).toBe(200);
 
     const response: request.Response = await request(server).get('/health/ready');
-    expect(response.body).toMatchObject({ status: 'ok', info: { redis: { status: 'up' } } });
+    expect(response.body).toMatchObject({
+      status: 'ok',
+      info: { redis: { status: 'up' }, nats: { status: 'up' } },
+    });
+  });
+
+  it('connects to NATS as its own user and receives its replies under its own inbox prefix', async () => {
+    const gateway: BrokerConnection | undefined = (await brokerConnections()).find(
+      (connection: BrokerConnection) => connection.name === 'realtime-gateway',
+    );
+
+    expect(gateway?.authorized_user).toBe(NATS_USER);
+    expect(gateway?.subscriptions_list?.length).toBeGreaterThan(0);
+    expect(
+      gateway?.subscriptions_list?.every((subject: string) =>
+        subject.startsWith(`_INBOX.${NATS_USER}.`),
+      ),
+    ).toBe(true);
   });
 
   it('accepts a long-polling preflight from the web application, with credentials', async () => {
@@ -422,6 +621,22 @@ describe('realtime gateway start-up', () => {
     expect(completion).toMatchObject({ service: 'realtime-gateway', method: 'GET', status: 404 });
     expect(JSON.stringify(lines)).not.toContain('chosen-by-the-client');
     expect(JSON.stringify(lines)).not.toContain('not-a-ticket');
+    expect(JSON.stringify(lines)).not.toContain(gatewayPassword);
+  });
+
+  it('reports NATS down on readiness once NATS stops, and stays alive', async () => {
+    await nats.stop();
+    natsStopped = true;
+
+    expect(await readinessStatus(503)).toBe(503);
+
+    const response: request.Response = await request(server).get('/health/ready');
+    expect(response.body).toMatchObject({
+      status: 'error',
+      info: { redis: { status: 'up' } },
+      error: { nats: { status: 'down' } },
+    });
+    await request(server).get('/health/live').expect(200);
   });
 
   it('reports Redis down on readiness once Redis stops, and stays alive', async () => {
@@ -438,20 +653,23 @@ describe('realtime gateway start-up', () => {
     await request(server).get('/health/live').expect(200);
   });
 
-  it('logs the outage once while the clients keep reconnecting', async () => {
+  it('logs the outage once for its three connections while they keep reconnecting', async () => {
     // Several reconnection attempts fail within this wait.
     await delay(1_500);
 
-    const outages: string[] = logLines.filter((line: string) =>
-      line.includes('Redis is unreachable'),
-    );
+    const outages: string[] = logLines.filter((line: string) => line.includes('redis unreachable'));
 
     expect(outages).toHaveLength(1);
-    expect(JSON.parse(outages[0] ?? '{}')).toMatchObject({ level: 'warn', context: 'Redis' });
+    expect(JSON.parse(outages[0] ?? '{}')).toMatchObject({
+      level: 'warn',
+      context: 'Redis',
+      connection: 'realtime-gateway',
+      msg: 'redis unreachable',
+    });
     expect(outages[0]).not.toContain(redisAddress);
   });
 
-  it('shuts down while Redis is down without an unhandled rejection', async () => {
+  it('answers 503 on readiness from the start of the stop, and stops without an unhandled rejection while Redis and NATS are down', async () => {
     const rejections: unknown[] = [];
     const collect = (reason: unknown): void => {
       rejections.push(reason);
@@ -459,17 +677,38 @@ describe('realtime gateway start-up', () => {
     process.on('unhandledRejection', collect);
     try {
       // Closing the Socket.IO server makes the adapter unsubscribe, a command that waits in the
-      // offline queue of the subscriber until the shutdown drops it.
-      await app.close();
+      // offline queue of the subscriber until the shutdown drops it. The listener stays open for
+      // the shutdown delay, which is when the probes below run.
+      const closing: Promise<void> = app.close();
+      const shutdownState: string | undefined = await waitFor(
+        async () =>
+          (
+            (await request(server).get('/health/ready')).body as {
+              error?: { shutdown?: { message?: string } };
+            }
+          ).error?.shutdown?.message,
+        'shutting down',
+      );
+      const ready: request.Response = await request(server).get('/health/ready');
+      const live: request.Response = await request(server).get('/health/live');
+      await closing;
       appClosed = true;
       await delay(500);
+
+      expect(shutdownState).toBe('shutting down');
+      expect(ready.status).toBe(503);
+      expect(ready.body).toEqual({
+        status: 'error',
+        info: {},
+        error: { shutdown: { status: 'down', message: 'shutting down' } },
+        details: { shutdown: { status: 'down', message: 'shutting down' } },
+      });
+      expect(live.status).toBe(200);
     } finally {
       process.off('unhandledRejection', collect);
     }
 
     expect(rejections).toEqual([]);
-    expect(logLines.filter((line: string) => line.includes('Socket.IO adapter failed'))).toEqual(
-      [],
-    );
+    expect(logLines.filter((line: string) => line.includes('redis command failed'))).toEqual([]);
   });
 });

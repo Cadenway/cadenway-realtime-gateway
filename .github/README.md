@@ -22,7 +22,7 @@ Requirements: Node.js LTS and pnpm (versions in `package.json`), and Docker.
    ```bash
    pnpm install
    cp .env.example .env
-   docker compose -f compose.dev.yaml up -d   # Redis and NATS
+   docker compose -f compose.dev.yaml up -d   # Redis, NATS and its EVENTS stream
    pnpm start:dev                             # http://localhost:3001, reads .env
    ```
 
