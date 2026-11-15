@@ -6,6 +6,9 @@ paths:
 # Connections and rooms
 
 - Authenticate at handshake; an unauthenticated socket is closed immediately.
+- Before authentication, `RedisIoAdapter` (`src/infrastructure/redis/`) refuses with 403 a handshake
+  whose `Origin` is not exactly one of `ALLOWED_ORIGINS`, or that has none: browsers apply no CORS
+  to a WebSocket upgrade. Never loosen it in a gateway decorator.
 - Rooms: `org:<id>`, `list:<id>`, `task:<id>`. Joining a list or task room checks the permission through
   the API's authorization contract.
 - Leave every room on logout, organization switch or token expiry.

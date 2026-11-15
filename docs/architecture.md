@@ -4,7 +4,34 @@
 
 ## Status
 
-The checkout contains a NestJS bootstrap and health endpoints. The following ownership map governs gateway capabilities as they are implemented.
+The checkout contains the runtime wiring below and no capability yet: the Socket.IO entry point
+closes every socket. The ownership map that follows governs gateway capabilities as they are
+implemented.
+
+## Runtime wiring
+
+| File                                           | Holds                                                                                                                                                                                                                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/telemetry.ts`                             | `startTelemetry` of `@cadenway/nest-common/telemetry`, preloaded by the start command before `main.js`                                                                                                                                                             |
+| `src/main.ts`                                  | Validates the environment, creates the application, listens on `PORT`                                                                                                                                                                                              |
+| `src/realtime-application.ts`                  | `createApplication` with the options of a public gateway (signer only, no internal token verification, incoming `X-Request-Id` and `X-Request-Timeout-Ms` ignored), then `trust proxy` for one hop, `helmet`, CORS for `ALLOWED_ORIGINS` and the Socket.IO adapter |
+| `src/app.module.ts`                            | `ConfigModule`, the Redis module, `HealthModule` with the Redis indicator, the Socket.IO gateway                                                                                                                                                                   |
+| `src/config/app-config.ts`                     | The zod schema of the environment                                                                                                                                                                                                                                  |
+| `src/infrastructure/redis/redis-connection.ts` | The main Redis connection: readiness, outage logs, closed on shutdown; presence will use it                                                                                                                                                                        |
+| `src/infrastructure/redis/redis-io.adapter.ts` | The Socket.IO adapter: exact `Origin` check of every handshake, CORS of long-polling, fan-out through `@socket.io/redis-adapter` on a publisher and a subscriber of its own, closed on shutdown                                                                    |
+| `src/connection/realtime.gateway.ts`           | The Socket.IO entry point; it closes every socket until handshake authentication exists                                                                                                                                                                            |
+
+`src/infrastructure/redis/` sits outside the capabilities because the fan-out of
+`src/connection/` and the presence of `src/presence/` share its connection, and because
+`src/realtime-application.ts` registers the adapter before the application initializes: a
+start-up file may not import the files of a capability (`module-private` rule of
+`pnpm test:architecture`).
+
+Start command, in the `Dockerfile` and `pnpm start:dev`:
+
+```text
+node --experimental-loader=@cadenway/nest-common/hook.mjs --import ./dist/telemetry.js dist/main.js
+```
 
 ## Purpose and target structure
 
@@ -19,6 +46,7 @@ Follow the [Cadenway NestJS architecture reference](https://github.com/Cadenway/
 - `src/connection/`: handshake authentication, rooms.
 - `src/relays/`: one relay per event family.
 - `src/presence/`: presence in Redis.
+- `src/infrastructure/redis/`: the Redis connection and the Socket.IO adapter they share.
 
 ## Boundaries
 

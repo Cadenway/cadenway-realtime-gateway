@@ -4,7 +4,15 @@ Planned role: cadenway-realtime-gateway pushes changes to browsers over WebSocke
 
 ## Current status
 
-This checkout is a bootstrapped scaffold: `package.json`, a NestJS application under `src/` that only answers the health routes, and the GitHub workflows exist. No business code, route, event or migration exists yet; the target architecture in this guide is what they must follow.
+The gateway runs on the shared runtime of `@cadenway/nest-common`: validated configuration, JSON
+logs, OpenTelemetry, `application/problem+json` errors, the internal token signer, the public-edge
+HTTP settings (security headers, one trusted proxy hop, CORS for the web application) and the
+health routes, whose readiness checks Redis. Socket.IO runs on a Redis adapter that fans out
+between instances and refuses a handshake from any origin but the web application. Every socket
+that passes is still closed at once: handshake authentication (the single-use ticket redeemed at
+cadenway-identity-service), rooms, relays and presence do not exist yet, nor the event consumers,
+which arrive with `@cadenway/nest-messaging`. The target architecture in this guide is what they
+must follow.
 
 ## Read the guides
 

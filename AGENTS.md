@@ -38,6 +38,7 @@ See the [Cadenway NestJS architecture reference](https://github.com/Cadenway/cad
 - `src/connection/`: handshake authentication, rooms.
 - `src/relays/`: one relay per event family.
 - `src/presence/`: presence in Redis.
+- `src/infrastructure/redis/`: the Redis connection and the Socket.IO adapter they share.
 
 ## Boundaries (hard rules)
 

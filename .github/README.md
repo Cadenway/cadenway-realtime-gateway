@@ -21,8 +21,14 @@ Requirements: Node.js LTS and pnpm (versions in `package.json`), and Docker.
 
    ```bash
    pnpm install
-   pnpm start:dev              # http://localhost:3001
+   cp .env.example .env
+   docker compose -f compose.dev.yaml up -d   # Redis and NATS
+   pnpm start:dev                             # http://localhost:3001, reads .env
    ```
+
+   The gateway refuses to start without a signing key in `INTERNAL_TOKEN_PRIVATE_JWK`, and no key is
+   committed: [development and verification](../docs/development.md#setup) says how to generate one
+   with `cadenway-ops`.
 
 ## Checks
 
@@ -33,7 +39,7 @@ pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm test src/<area>
-pnpm test:integration                    # Redis and NATS in Docker
+pnpm test:integration                    # disposable Redis in Docker
 pnpm build
 docker compose -f compose.dev.yaml config -q
 ```
