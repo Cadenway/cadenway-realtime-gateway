@@ -1,10 +1,10 @@
 import { createApplication, type CreateApplicationOptions } from '@cadenway/nest-common';
+import { ResilientRedisClient } from '@cadenway/nest-common/redis';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 
 import { AppModule } from './app.module.js';
 import type { AppConfig } from './config/app-config.js';
-import { RedisConnection } from './infrastructure/redis/redis-connection.js';
 import { RedisIoAdapter } from './infrastructure/redis/redis-io.adapter.js';
 
 /**
@@ -56,7 +56,9 @@ export const CORS_MAX_AGE_SECONDS: number = 600;
  * Creates the realtime gateway with the shared formats of `@cadenway/nest-common`, the settings
  * of a public edge and the Socket.IO adapter, ready to listen. `main.ts` calls it with the
  * configuration of the process; the integration tests call it with theirs, so both run the same
- * start-up.
+ * start-up. It waits while the NATS broker is unreachable, and rejects when the application cannot
+ * be created, such as for an environment `ConfigModule` refuses or a broker without the `EVENTS`
+ * stream.
  *
  * - The internal token is signed for the calls the gateway will make to cadenway-identity-service
  *   and cadenway-task-service (`INTERNAL_TOKEN_ISSUER`, `INTERNAL_TOKEN_PRIVATE_JWK`) and verified
@@ -103,7 +105,7 @@ export async function createRealtimeApplication(
     maxAge: CORS_MAX_AGE_SECONDS,
   });
   app.useWebSocketAdapter(
-    new RedisIoAdapter(app, app.get(RedisConnection), config.ALLOWED_ORIGINS),
+    new RedisIoAdapter(app, app.get(ResilientRedisClient), config.ALLOWED_ORIGINS),
   );
   return app;
 }
