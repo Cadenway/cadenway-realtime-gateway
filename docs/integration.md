@@ -2,7 +2,10 @@
 
 [Documentation index](README.md) · [Repository instructions](../AGENTS.md)
 
-**Status:** This page records the target design from repository instructions and skills. Its behavior has not been verified as implemented in this snapshot.
+**Status:** This page records the design from repository instructions and skills. The handshake
+origin check, the Redis fan-out, the logs and the telemetry start-up are implemented and covered by
+`test/realtime-gateway.int-spec.ts`; the handshake ticket, the rooms, the relays, the revocation
+and presence are not built yet.
 
 ## Delivery boundaries
 
@@ -34,6 +37,24 @@ only.
 Every message leaves in the envelope `{ id, type, at, version, data }`. The Message column of the
 table is `data`.
 
+### Handshake origin
+
+Browsers apply no CORS to a WebSocket upgrade, so the gateway checks `Origin` itself before
+anything else: `RedisIoAdapter` (`src/infrastructure/redis/redis-io.adapter.ts`) answers 403 to a
+handshake, WebSocket or long-polling, whose `Origin` is not exactly one of `ALLOWED_ORIGINS` or that
+has none. `ALLOWED_ORIGINS` holds the web application only (`app.<domain>`); the long-polling
+transport answers CORS for the same origins, with credentials. The client bundle is not served.
+
+### Fan-out
+
+`@socket.io/redis-adapter` carries what an instance broadcasts to the others, over a publisher and a
+subscriber opened from the options of the main Redis connection under their own names
+(`realtime-gateway-publisher`, `realtime-gateway-subscriber`). Their commands wait for the
+connection while Redis is unreachable, at start-up or during an outage, and readiness answers 503
+meanwhile; the adapter sends its commands without handling their promises, so the clients settle
+each one themselves rather than let a failure stop the process. Both close on shutdown, before the
+main connection.
+
 ### Handshake ticket
 
 The client authenticates with a single-use ticket valid 60 seconds, passed in `auth.token`. A ticket
@@ -54,9 +75,10 @@ nothing.
 
 Source: `cw-logging-and-tracing` ([Claude](../.claude/skills/cw-logging-and-tracing/SKILL.md), [Codex](../.codex/skills/cw-logging-and-tracing/SKILL.md)).
 
-The logger, the redaction list, the OpenTelemetry SDK, its
-instrumentations and its exporters belong to `@cadenway/nest-common`: the gateway configures them and
-installs no logging or telemetry library of its own. `pino-pretty` is the one exception, a
+The logger, the redaction list, the OpenTelemetry SDK, its instrumentations and its exporters
+belong to `@cadenway/nest-common`: the gateway configures them and installs no logging or telemetry
+library of its own. `createApplication` (called by `src/realtime-application.ts`) installs the logs,
+and `src/telemetry.ts` starts the telemetry. `pino-pretty` is the one exception, a
 development dependency for readable local output. Check what the installed kit exports before relying
 on a name.
 
@@ -85,14 +107,22 @@ on a name.
 The telemetry must be loaded before the application imports Express:
 
 ```text
-node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import ./telemetry.js dist/main.js
+node --experimental-loader=@cadenway/nest-common/hook.mjs --import ./dist/telemetry.js dist/main.js
 ```
 
+- `src/telemetry.ts` only calls `startTelemetry` of `@cadenway/nest-common/telemetry`, which
+  imports no NestJS code. The hook is named through the kit: pnpm's strict `node_modules` does not
+  expose `@opentelemetry/instrumentation` to the application.
 - This is the only documented way while NestJS 12 imports Express as ESM. Node 24 marks
-  `--experimental-loader` as discouraged: revisit the command with each Node or SDK upgrade.
-- The flags go on the `node` start command (the `CMD` of the `Dockerfile`), not in application code.
-- `OTEL_EXPORTER_OTLP_ENDPOINT` points to the collector; like `LOG_LEVEL`, it is validated at start-up
-  and described in `.env.example`.
+  `--experimental-loader` as discouraged and prints an `ExperimentalWarning` on standard error at
+  start-up: revisit the command with each Node or SDK upgrade.
+- The flags go on the `node` start command (the `CMD` of the `Dockerfile` and `pnpm start:dev`),
+  not in application code.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` points to the collector; `startTelemetry` refuses anything but an
+  HTTP or HTTPS URL, and unset, nothing is exported. It is described in `.env.example` and stays out
+  of `deploy/compose.yaml` until an environment has a collector.
+- The kit instruments ioredis: the commands of the Socket.IO adapter (`PUBLISH`, the
+  subscriptions) and the readiness `PING` become spans.
 
 ### Metrics
 

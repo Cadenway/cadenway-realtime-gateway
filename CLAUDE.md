@@ -36,7 +36,7 @@ pnpm lint
 pnpm typecheck
 pnpm test:architecture
 pnpm test:coverage
-pnpm test:integration                    # Redis and NATS in Docker
+pnpm test:integration                    # disposable Redis in Docker
 pnpm build
 docker compose -f compose.dev.yaml config -q
 ```
