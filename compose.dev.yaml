@@ -1,6 +1,7 @@
 # Dependencies of cadenway-realtime-gateway for working on it alone: Redis (presence and
-# cross-instance fan-out) and NATS JetStream (the events it relays). The gateway itself runs on the
-# host with `pnpm start:dev`.
+# cross-instance fan-out) and NATS JetStream (the events it will relay). The gateway itself runs on
+# the host with `pnpm start:dev`, which reads .env (copied from .env.example, plus a development
+# signing key). The integration tests start this same Redis image in a disposable container.
 name: cadenway-realtime-gateway-dev
 
 services:
