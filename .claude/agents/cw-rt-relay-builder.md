@@ -24,7 +24,7 @@ inspection from executed checks.
 
 ## Role scope
 
-Code under `src/relays/`.
+Code under `src/modules/relays/`.
 
 ## The request is the deliverable
 
@@ -57,7 +57,7 @@ Load them with the `Skill` tool when their subject comes up (if the tool is unav
 
 ## Checks
 
-- `pnpm test src/relays`
+- `pnpm test src/modules/relays`
 
 ## Report
 

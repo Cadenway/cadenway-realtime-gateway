@@ -71,9 +71,9 @@ check that writes files. No agent delegates further.
 
 | File | Subject | Loads for |
 | --- | --- | --- |
-| `connection.md` | Connections and rooms | `src/connection/**` |
-| `relays.md` | Relays | `src/relays/**` |
-| `presence.md` | Presence | `src/presence/**` |
+| `connection.md` | Connections and rooms | `src/modules/connection/**` |
+| `relays.md` | Relays | `src/modules/relays/**` |
+| `presence.md` | Presence | `src/modules/presence/**` |
 | `tests.md` | Tests | `**/*.spec.ts`, `test/**` |
 | `deploy.md` | Deployment files | `Dockerfile`, `deploy/**`, `compose.dev.yaml`, `.env.example` |
 | `language.md` | Language | always |

@@ -1,6 +1,6 @@
 ---
 paths:
-  - 'src/connection/**'
+  - 'src/modules/connection/**'
 ---
 
 # Connections and rooms
@@ -18,3 +18,5 @@ paths:
 - On `session.revoked`, `member.removed` or a role change, close the sockets concerned.
 - No connection state recovery (incompatible with the Redis adapter): the client rejoins its rooms
   and refetches.
+- In the V2 layout, register Socket.IO entry points from `presentation/websocket/gateways/`. The
+  application owns ticket redemption, room authorization and its outbound ports.

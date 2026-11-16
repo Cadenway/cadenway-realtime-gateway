@@ -4,25 +4,26 @@
 
 ## Status
 
-The checkout contains the runtime wiring below and no capability yet: the Socket.IO entry point
-closes every socket. The ownership map that follows governs gateway capabilities as they are
-implemented.
+The connection module is the only capability wired today. Its application query rejects each
+connection until handshake authentication is implemented. The Socket.IO gateway applies the decision
+by disconnecting the socket.
 
 ## Runtime wiring
 
-| File                                           | Holds                                                                                                                                                                                                                                                                          |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/telemetry.ts`                             | `startTelemetry` of `@cadenway/nest-common/telemetry`, preloaded by the start command before `main.js`                                                                                                                                                                         |
-| `src/main.ts`                                  | Inside `runApplication`: validates the environment, creates the application, listens on `PORT`; a failed start-up is one JSON line on the standard error and exit code 1                                                                                                       |
-| `src/realtime-application.ts`                  | `createApplication` with the options of a public gateway (signer only, no internal token verification, incoming `X-Request-Id` and `X-Request-Timeout-Ms` ignored), then `trust proxy` for one hop, `helmet`, CORS for `ALLOWED_ORIGINS` and the Socket.IO adapter             |
-| `src/app.module.ts`                            | `ConfigModule` (validated when the application is created), the Redis module, `MessagingModule` (the NATS connection, no outbox, no stream management, no dead-letter worker), `HealthModule` with the Redis and NATS indicators and the shutdown delay, the Socket.IO gateway |
-| `src/config/app-config.ts`                     | The zod schema of the environment                                                                                                                                                                                                                                              |
-| `src/infrastructure/redis/redis.module.ts`     | The main Redis connection, a `ResilientRedisClient` of `@cadenway/nest-common/redis`: readiness, outage logs, closed on shutdown; presence will use it                                                                                                                         |
-| `src/infrastructure/redis/redis-io.adapter.ts` | The Socket.IO adapter: exact `Origin` check of every handshake, CORS of long-polling, fan-out through `@socket.io/redis-adapter` on the publisher and subscriber `createPubSubClients` derives from the main connection, closed on shutdown                                    |
-| `src/connection/realtime.gateway.ts`           | The Socket.IO entry point; it closes every socket until handshake authentication exists                                                                                                                                                                                        |
+| File                                                                                  | Holds                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/telemetry.ts`                                                                    | `startTelemetry` of `@cadenway/nest-common/telemetry`, preloaded by the start command before `main.js`                                                                                                                                                                                 |
+| `src/main.ts`                                                                         | Inside `runApplication`: validates the environment, creates the application, listens on `PORT`; a failed start-up is one JSON line on the standard error and exit code 1                                                                                                               |
+| `src/realtime-application.ts`                                                         | `createApplication` with the options of a public gateway (signer only, no internal token verification, incoming `X-Request-Id` and `X-Request-Timeout-Ms` ignored), then `trust proxy` for one hop, `helmet`, CORS for `ALLOWED_ORIGINS` and the Socket.IO adapter                     |
+| `src/app.module.ts`                                                                   | `ConfigModule` (validated when the application is created), the Redis module, `MessagingModule` (the NATS connection, no outbox, no stream management, no dead-letter worker), `HealthModule` with the Redis and NATS indicators and the shutdown delay, and the connection capability |
+| `src/config/app-config.ts`                                                            | The zod schema of the environment                                                                                                                                                                                                                                                      |
+| `src/infrastructure/redis/redis.module.ts`                                            | The main Redis connection, a `ResilientRedisClient` of `@cadenway/nest-common/redis`: readiness, outage logs, closed on shutdown; presence will use it                                                                                                                                 |
+| `src/infrastructure/redis/redis-io.adapter.ts`                                        | The Socket.IO adapter: exact `Origin` check of every handshake, CORS of long-polling, fan-out through `@socket.io/redis-adapter` on the publisher and subscriber `createPubSubClients` derives from the main connection, closed on shutdown                                            |
+| `src/modules/connection/connection.module.ts`                                         | The connection capability, imported by the root module to register its Socket.IO entry point                                                                                                                                                                                           |
+| `src/modules/connection/presentation/websocket/gateways/realtime/realtime.gateway.ts` | The Socket.IO entry point. It closes every socket until handshake authentication exists.                                                                                                                                                                                               |
 
 `src/infrastructure/redis/` sits outside the capabilities because the fan-out of
-`src/connection/` and the presence of `src/presence/` share its connection, and because
+`src/modules/connection/` and the presence of `src/modules/presence/` share its connection, and because
 `src/realtime-application.ts` registers the adapter before the application initializes: a
 start-up file may not import the files of a capability (`module-private` rule of
 `pnpm test:architecture`).
@@ -48,10 +49,27 @@ Planned event subscriptions include `task.*`, `comment.created`, `notification.c
 
 Follow the [Cadenway NestJS architecture reference](https://github.com/Cadenway/cadenway-service-kit/blob/main/docs/hexagonal-architecture.md) for ports, adapters, dependency direction, naming and test placement.
 
-- `src/connection/`: handshake authentication, rooms.
-- `src/relays/`: one relay per event family.
-- `src/presence/`: presence in Redis.
+- `src/modules/connection/`: handshake authentication, rooms.
+- `src/modules/relays/`: one relay per event family.
+- `src/modules/presence/`: presence in Redis.
 - `src/infrastructure/redis/`: the Redis connection and the Socket.IO adapter they share.
+
+### V2 capability layout
+
+The realtime gateway uses the [V2 gateway
+profile](https://github.com/Cadenway/cadenway-service-kit/blob/main/docs/hexagonal-architecture.md#realtime-gateway-profile).
+See the [connection module](../src/modules/connection/MODULE.md) for the current implementation.
+
+`connection` owns handshake authentication and room access, `relays` owns
+event-to-audience orchestration, and `presence` owns presence policy. Put Socket.IO and NATS
+entry points in `presentation/`, authorization and audience selection in `application/`, and
+outgoing integrations in `infrastructure/`. Each capability has a root Nest module and
+`MODULE.md` under `src/modules/`. Its entry points call use cases and its composition binds
+outbound ports.
+
+The shared Redis connection and Socket.IO adapter remain in `src/infrastructure/redis/` because
+bootstrap registers them before application initialization. Upstream permission checks, presence
+storage and room publication have distinct ports.
 
 ## Boundaries
 

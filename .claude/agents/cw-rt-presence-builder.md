@@ -24,7 +24,7 @@ inspection from executed checks.
 
 ## Role scope
 
-Code under `src/presence/`.
+Code under `src/modules/presence/`.
 
 ## The request is the deliverable
 

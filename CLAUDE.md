@@ -17,6 +17,9 @@
 4. Presence (online, away, do not disturb, invisible) lives in Redis with expiry.
 5. Scale out through the Redis adapter; no in-memory state that a second instance would miss.
 
+Follow the V2 realtime gateway layout in [AGENTS.md](AGENTS.md) when creating or moving a
+capability.
+
 ## Boundaries (hard rules)
 
 - No database; Redis for presence and cross-instance fan-out.

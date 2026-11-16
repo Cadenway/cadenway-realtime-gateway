@@ -24,7 +24,7 @@ export const CONNECTION_NAME: string = 'realtime-gateway';
  * Owns the main Redis connection of the realtime gateway, provided under the `ResilientRedisClient`
  * class of `@cadenway/nest-common/redis`: readiness probes it with `PING`, the Socket.IO adapter
  * derives its publisher and subscriber from its options, and presence will use it from
- * `src/presence/`.
+ * `src/modules/presence/`.
  *
  * - The connection is opened at start-up from `REDIS_URL` without waiting for it: the application
  *   starts while Redis is still unreachable, and readiness answers 503 until it is ready.

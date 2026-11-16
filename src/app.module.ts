@@ -15,8 +15,8 @@ import {
 import { Module } from '@nestjs/common';
 
 import { appConfigSchema, type AppConfig } from './config/app-config.js';
-import { RealtimeGateway } from './connection/realtime.gateway.js';
 import { RedisModule } from './infrastructure/redis/redis.module.js';
+import { ConnectionModule } from './modules/connection/connection.module.js';
 
 /**
  * Constant MESSAGING_SERVICE_NAME
@@ -99,10 +99,9 @@ export function messagingOptions(config: AppConfig): MessagingModuleOptions {
  *   answers 503 while Redis does not answer `PING` or NATS does not answer a flush within one
  *   second, and from the start of the stop (see `SHUTDOWN_DELAY_MS`). Both are what the container
  *   healthcheck and the deployment probe.
- * - `RealtimeGateway` is the Socket.IO entry point.
+ * - `ConnectionModule` registers the Socket.IO entry point.
  *
- * The modules of `src/connection/`, `src/relays/` and `src/presence/` are registered here as they
- * are created.
+ * Realtime capability modules under `src/modules/` are registered here as they are created.
  */
 @Module({
   imports: [
@@ -120,7 +119,7 @@ export function messagingOptions(config: AppConfig): MessagingModuleOptions {
         shutdownDelayMs: SHUTDOWN_DELAY_MS,
       }),
     }),
+    ConnectionModule,
   ],
-  providers: [RealtimeGateway],
 })
 export class AppModule {}
