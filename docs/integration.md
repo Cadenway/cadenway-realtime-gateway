@@ -4,7 +4,7 @@
 
 **Status:** This page records the design from repository instructions and skills. The handshake
 origin check, the Redis fan-out, the logs and the telemetry start-up are implemented and covered by
-`test/realtime-gateway.int-spec.ts`; the handshake ticket, the rooms, the relays, the revocation
+`tests/realtime-gateway.int-spec.ts`; the handshake ticket, the rooms, the relays, the revocation
 and presence are not built yet.
 
 ## Delivery boundaries

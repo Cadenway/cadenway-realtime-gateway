@@ -24,7 +24,7 @@ inspection from executed checks.
 
 ## Role scope
 
-Code under `src/connection/`.
+Code under `src/modules/connection/`.
 
 ## The request is the deliverable
 
@@ -56,7 +56,7 @@ Load them with the `Skill` tool when their subject comes up (if the tool is unav
 
 ## Checks
 
-- `pnpm test src/connection`
+- `pnpm test src/modules/connection`
 
 ## Report
 

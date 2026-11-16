@@ -3,7 +3,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { io, type Socket } from 'socket.io-client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { RealtimeGateway } from './realtime.gateway.js';
+import { ConnectionModule } from '../../../../connection.module.js';
 
 describe('RealtimeGateway', () => {
   let app: INestApplication;
@@ -11,7 +11,7 @@ describe('RealtimeGateway', () => {
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
-      providers: [RealtimeGateway],
+      imports: [ConnectionModule],
     }).compile();
     app = moduleRef.createNestApplication();
     await app.listen(0, '127.0.0.1');

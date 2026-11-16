@@ -35,10 +35,27 @@ Planned event subscriptions include `task.*`, `comment.created`, `notification.c
 
 See the [Cadenway NestJS architecture reference](https://github.com/Cadenway/cadenway-service-kit/blob/main/docs/hexagonal-architecture.md) for dependency and test rules.
 
-- `src/connection/`: handshake authentication, rooms.
-- `src/relays/`: one relay per event family.
-- `src/presence/`: presence in Redis.
+- `src/modules/connection/`: handshake authentication, rooms.
+- `src/modules/relays/`: one relay per event family.
+- `src/modules/presence/`: presence in Redis.
 - `src/infrastructure/redis/`: the Redis connection and the Socket.IO adapter they share.
+
+### V2 capability layout
+
+Use the [NestJS architecture
+guide](https://github.com/Cadenway/cadenway-service-kit/blob/main/docs/hexagonal-architecture.md#realtime-gateway-profile)
+for new or reorganized capabilities. The current layout remains documented in
+[docs/architecture.md](docs/architecture.md).
+
+Put the `connection`, `relays` and `presence` capabilities under `src/modules/`. Keep Socket.IO
+and NATS entry points in `presentation/`, authorization and audience selection in
+`application/` and outgoing adapters in `infrastructure/`. Bind ports in the capability’s
+`<module>.module.ts` or the optional `composition/` wiring directory. Each capability has a
+`MODULE.md`. All transport entry points call a use case.
+
+The Redis connection and Socket.IO adapter shared by the bootstrap stay in
+`src/infrastructure/redis/`. Presence, room publication and upstream authorization have distinct
+ports.
 
 ## Boundaries (hard rules)
 
@@ -67,12 +84,12 @@ The scripts below are this repository's contract. While the repository is being 
 create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
 narrowest check that covers the change first, then widen:
 
-| Changed                         | Minimum check                                        |
-| ------------------------------- | ---------------------------------------------------- |
-| Relays or rooms                 | `pnpm test src/relays` or `pnpm test src/connection` |
-| Presence                        | `pnpm test:integration presence`                     |
-| Any source                      | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`   |
-| Docs or agent instructions only | Scoped formatting and link review                    |
+| Changed                         | Minimum check                                                        |
+| ------------------------------- | -------------------------------------------------------------------- |
+| Relays or rooms                 | `pnpm test src/modules/relays` or `pnpm test src/modules/connection` |
+| Presence                        | `pnpm test:integration presence`                                     |
+| Any source                      | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                   |
+| Docs or agent instructions only | Scoped formatting and link review                                    |
 
 Report the commands you actually ran and their results; a check you did not run is reported as not
 run.
