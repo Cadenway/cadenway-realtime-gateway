@@ -3,6 +3,6 @@ name: cw-presence
 description: Change presence.
 ---
 
-Use the **cw-rt-presence-builder** specialist for this task when delegation is available and authorized; otherwise read `.codex/agents/cw-rt-presence-builder.toml` and follow its instructions directly: the user-provided arguments
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate the user's arguments to **cw-rt-presence-builder** if delegation is available and authorized.
+Otherwise read and follow `.codex/agents/cw-rt-presence-builder.toml` directly with those arguments.
+Do not restate its rules or procedure.

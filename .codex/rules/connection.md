@@ -5,18 +5,19 @@ paths:
 
 # Connections and rooms
 
-- Authenticate at handshake; an unauthenticated socket is closed immediately.
-- Before authentication, `RedisIoAdapter` (`src/infrastructure/redis/`) refuses with 403 a handshake
-  whose `Origin` is not exactly one of `ALLOWED_ORIGINS`, or that has none: browsers apply no CORS
-  to a WebSocket upgrade. Never loosen it in a gateway decorator.
-- Rooms: `org:<id>`, `list:<id>`, `task:<id>`. Joining a list or task room checks the permission through
-  the API's authorization contract.
-- Leave every room on logout, organization switch or token expiry.
-- The handshake credential is a single-use ticket valid 60 seconds, read from `auth.token`.
-- The personal room is `member:<id>`; a socket joins the room of its authenticated member only.
-- Messages leave in the envelope `{ id, type, at, version, data }`.
-- On `session.revoked`, `member.removed` or a role change, close the sockets concerned.
-- No connection state recovery (incompatible with the Redis adapter): the client rejoins its rooms
-  and refetches.
-- In the V2 layout, register Socket.IO entry points from `presentation/websocket/gateways/`. The
-  application owns ticket redemption, room authorization and its outbound ports.
+- Close unauthenticated sockets immediately. Before authentication, `RedisIoAdapter`
+  (`src/infrastructure/redis/`) returns 403 for a missing `Origin` or one outside
+  `ALLOWED_ORIGINS`. Compare exactly and keep the check outside gateway decorators because
+  browser CORS does not apply to the upgrade.
+- Enforce API permissions for joining `list:<id>` or `task:<id>`. Use `org:<id>` for
+  organization rooms. Leave all rooms on logout, organization switch, or token expiry.
+- Follow [`cw-rooms-and-relays`](../skills/cw-rooms-and-relays/SKILL.md) for the single-use
+  handshake ticket, personal room, envelope, revocation, and reconnection.
+- Under V2, register Socket.IO entry points in `presentation/websocket/gateways/`. Application
+  code owns ticket redemption, room authorization, and outbound ports.
+
+## Review example
+
+For example, reconnecting after a session ends must take the same authorization path as a fresh
+connection. Test socket closure on revocation and avoid carrying the old organization's rooms
+into a new connection.

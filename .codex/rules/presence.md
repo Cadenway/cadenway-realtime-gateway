@@ -5,8 +5,7 @@ paths:
 
 # Presence
 
-- Redis keys with TTL refreshed by heartbeats; invisible members appear offline.
-- Presence changes go to the organization room only.
-- In the V2 layout, application rules own expiry and visibility. Implement presence storage
-  behind its own port. Reuse the shared Redis connection through an adapter under
-  `infrastructure/`.
+- Refresh Redis key TTLs on heartbeat. Show invisible members as offline and publish changes
+  only to the organization room.
+- In V2, keep expiry and visibility in application code. Reuse shared Redis behind a presence
+  storage port and an `infrastructure/` adapter.
