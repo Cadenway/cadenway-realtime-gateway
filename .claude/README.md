@@ -1,8 +1,7 @@
 # cadenway-realtime-gateway: Claude Code tooling
 
-This `.claude/` folder ships the Claude Code tooling of cadenway-realtime-gateway: **9 agents**,
-10 slash commands, 9 rules, 15 skills, 3 hooks, the project
-settings and launch configuration. The application launch requires the planned package scripts.
+This directory contains the repository's Claude Code agents, commands, scoped rules, skills,
+hooks and project settings. The tables below explain when to use them.
 
 Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CLAUDE.md](../CLAUDE.md)
 (the Claude entry point).
@@ -74,7 +73,7 @@ check that writes files. No agent delegates further.
 | `connection.md` | Connections and rooms | `src/modules/connection/**` |
 | `relays.md` | Relays | `src/modules/relays/**` |
 | `presence.md` | Presence | `src/modules/presence/**` |
-| `tests.md` | Tests | `**/*.spec.ts`, `tests/**` |
+| `tests.md` | Tests | `**/*.spec.ts`, `src/**/*.int-spec.ts`, `tests/**` |
 | `deploy.md` | Deployment files | `Dockerfile`, `deploy/**`, `compose.dev.yaml`, `.env.example` |
 | `language.md` | Language | always |
 | `git-and-commits.md` | Git and commits | always |

@@ -5,8 +5,14 @@ paths:
 
 # Relays
 
-- One relay per event family; payloads from the installed `@cadenway/contracts`.
-- Narrowest room first; private-space events reach that space's members only.
-- Messages carry ids and changed fields; clients refetch details through the API.
-- In the V2 layout, group handlers in `src/modules/relays/presentation/messaging/handlers/<event-family>/`. Application logic chooses the authorized audience and calls
-  a publication port.
+- One relay per event family uses installed `@cadenway/contracts` payloads.
+- Follow `cw-rooms-and-relays`: narrowest room, members only for private spaces. Send IDs and
+  changed fields. Clients refetch through the API.
+- In V2, put handlers in `src/modules/relays/presentation/messaging/handlers/<event-family>/`.
+  Application selects the authorized audience and calls a publication port.
+
+## Review example
+
+For example, a private task update is sent to the authorized room with the changed fields.
+Check that each eligible client receives the change and that sockets outside the room receive
+nothing. For changes to fan-out, inspect whether payload size or work per recipient grows.
