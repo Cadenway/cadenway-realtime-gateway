@@ -10,4 +10,4 @@
 // package.json next to dist/.
 import { startTelemetry } from '@cadenway/nest-common/telemetry';
 
-startTelemetry({ service: 'realtime-gateway' });
+startTelemetry({ service: 'realtime-gateway', redactRedisCommandArguments: true });

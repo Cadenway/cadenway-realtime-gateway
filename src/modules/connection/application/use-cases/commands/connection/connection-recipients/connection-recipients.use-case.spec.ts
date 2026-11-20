@@ -1,0 +1,190 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import type { ConnectionRecipient } from '../../../../models/connection/connection-recipient.model.js';
+import type { RecipientRegistry } from '../../../../ports/outbound/redis/connection/recipient-registry.port.js';
+import type { RecipientTransport } from '../../../../ports/outbound/socket-io/connection/recipient-transport.port.js';
+import type { RoomAccessPort } from '../../../../ports/outbound/task/visibility/room-access.port.js';
+import { ConnectionRecipients } from './connection-recipients.use-case.js';
+
+const organization = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b2f';
+const otherOrganization = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b30';
+const listId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b31';
+const spaceId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b32';
+const taskId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b33';
+const taskKey = 'CAD-482';
+
+function recipient(): ConnectionRecipient {
+  return {
+    socketId: 'socket',
+    session: {
+      organizationId: organization,
+      userId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b34',
+      memberId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b35',
+      sessionId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b36',
+      sessionVersion: 2,
+      expiresAt: Date.now() + 30_000,
+      role: 'member',
+    },
+  };
+}
+
+function fixture() {
+  const registry = {
+    readFence: vi.fn<RecipientRegistry['readFence']>().mockResolvedValue('5'),
+    publish: vi.fn<RecipientRegistry['publish']>().mockResolvedValue(true),
+    evict: vi.fn<RecipientRegistry['evict']>().mockResolvedValue(null),
+    markOrganizationChanged: vi
+      .fn<RecipientRegistry['markOrganizationChanged']>()
+      .mockResolvedValue(undefined),
+    markSessionRevoked: vi
+      .fn<RecipientRegistry['markSessionRevoked']>()
+      .mockResolvedValue(undefined),
+    markMembershipRole: vi
+      .fn<RecipientRegistry['markMembershipRole']>()
+      .mockResolvedValue(undefined),
+    markMembershipRemoved: vi
+      .fn<RecipientRegistry['markMembershipRemoved']>()
+      .mockResolvedValue(undefined),
+    advanceVisibility: vi.fn<RecipientRegistry['advanceVisibility']>().mockResolvedValue(undefined),
+    invalidateOrganizationLeases: vi
+      .fn<RecipientRegistry['invalidateOrganizationLeases']>()
+      .mockResolvedValue(undefined),
+  } satisfies RecipientRegistry;
+  const transport = {
+    read: vi.fn<RecipientTransport['read']>().mockResolvedValue([]),
+    deliverPresence: vi.fn<RecipientTransport['deliverPresence']>().mockResolvedValue(undefined),
+    leave: vi.fn<RecipientTransport['leave']>(),
+    disconnect: vi.fn<RecipientTransport['disconnect']>(),
+  } satisfies RecipientTransport;
+  const access = {
+    list: vi.fn<RoomAccessPort['list']>().mockResolvedValue(null),
+    task: vi.fn<RoomAccessPort['task']>().mockResolvedValue(null),
+  } satisfies RoomAccessPort;
+  return {
+    registry,
+    transport,
+    access,
+    connections: new ConnectionRecipients(registry, transport, access),
+  };
+}
+
+describe('ConnectionRecipients', () => {
+  it('finds only tenant recipients of the private Task key index', async () => {
+    const { connections, transport } = fixture();
+    const selected = recipient();
+    transport.read.mockResolvedValue([
+      selected,
+      {
+        ...selected,
+        socketId: 'other',
+        session: { ...selected.session, organizationId: otherOrganization },
+      },
+    ]);
+
+    await expect(connections.readTask(organization, taskKey)).resolves.toEqual([selected]);
+    expect(transport.read).toHaveBeenCalledExactlyOnceWith(`task-key:${organization}:${taskKey}`);
+  });
+
+  it('refuses a Task placement from another tenant or without a stable UUID', async () => {
+    const { connections, access } = fixture();
+    const selected = recipient();
+    const selection = { kind: 'task', taskKey } as const;
+    access.task
+      .mockResolvedValueOnce({
+        organizationId: otherOrganization,
+        spaceId,
+        listId,
+        taskKey,
+        taskId,
+      })
+      .mockResolvedValueOnce({ organizationId: organization, spaceId, listId, taskKey })
+      .mockResolvedValueOnce({ organizationId: organization, spaceId, listId, taskKey, taskId });
+
+    await expect(connections.authorized(selected, selection)).resolves.toBeNull();
+    await expect(connections.authorized(selected, selection)).resolves.toBeNull();
+    await expect(connections.authorized(selected, selection)).resolves.toMatchObject({
+      spaceId,
+      listId,
+      taskId,
+      taskKey,
+    });
+    expect(access.task).toHaveBeenLastCalledWith(selected.session, taskKey, undefined);
+  });
+
+  it('keeps the fence and publication in a single registry operation', async () => {
+    const { connections, registry } = fixture();
+    const selected = recipient();
+    const room = `task:${taskId}` as const;
+    const packet = { type: 'task.updated.v1' };
+    registry.publish.mockResolvedValueOnce(false);
+
+    await expect(connections.deliver(selected, room, '4', packet)).resolves.toBe(false);
+    await expect(connections.deliver(selected, room, '5', packet)).resolves.toBe(true);
+    expect(registry.publish).toHaveBeenLastCalledWith(
+      selected.socketId,
+      selected.session,
+      '5',
+      room,
+      packet,
+    );
+  });
+
+  it('closes an earlier session context after fencing and preserves a current socket', async () => {
+    const { connections, registry, transport } = fixture();
+    const earlier = recipient();
+    const current = {
+      ...earlier,
+      socketId: 'current',
+      session: { ...earlier.session, sessionVersion: 3 },
+    };
+    transport.read.mockResolvedValue([earlier, current]);
+    registry.readFence.mockResolvedValueOnce(null);
+
+    await connections.switchSession(earlier.session.sessionId, 3);
+
+    expect(registry.markOrganizationChanged).toHaveBeenCalledExactlyOnceWith(
+      earlier.session.sessionId,
+      3,
+    );
+    expect(transport.read).toHaveBeenCalledExactlyOnceWith(
+      `session:${earlier.session.sessionId}`,
+      true,
+    );
+    expect(transport.disconnect).toHaveBeenCalledExactlyOnceWith(earlier);
+    expect(registry.markOrganizationChanged.mock.invocationCallOrder[0]).toBeLessThan(
+      registry.readFence.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it('passes the producer fact to the durable organization marker', async () => {
+    const { connections, registry, transport } = fixture();
+    const eventId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b37';
+    await connections.disconnectOrganization(organization, eventId);
+    expect(registry.invalidateOrganizationLeases).toHaveBeenCalledExactlyOnceWith(
+      organization,
+      eventId,
+    );
+    expect(transport.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('removes both indexes for a revoked Task selection without resolving it', async () => {
+    const { connections, registry, transport, access } = fixture();
+    const selected = recipient();
+    const canonical = `task:${taskId}` as const;
+    registry.evict.mockResolvedValue(canonical);
+
+    await connections.evict(selected, { kind: 'task', taskKey }, '5');
+
+    expect(registry.evict).toHaveBeenCalledExactlyOnceWith(
+      selected.socketId,
+      selected.session,
+      '5',
+      { kind: 'task', taskKey },
+    );
+    expect(transport.leave).toHaveBeenCalledExactlyOnceWith(selected, [
+      canonical,
+      `task-key:${organization}:${taskKey}`,
+    ]);
+    expect(access.task).not.toHaveBeenCalled();
+  });
+});

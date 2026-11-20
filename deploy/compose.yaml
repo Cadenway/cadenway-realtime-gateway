@@ -36,6 +36,14 @@ services:
       - traefik.docker.network=cadenway-edge-${ENVIRONMENT:-local}
       - traefik.http.routers.realtime-gateway-${ENVIRONMENT:-local}.rule=Host(`realtime.${DOMAIN}`)
       - traefik.http.services.realtime-gateway-${ENVIRONMENT:-local}.loadbalancer.server.port=3001
+      # Engine.IO polling keeps its session on one instance. Browsers must send credentials on
+      # cross-origin polling requests so this host-only cookie returns to realtime.<domain>.
+      # In HTTPS acceptance with two replicas, force polling and check successive requests keep
+      # the same session, then stop its replica and verify a fresh ticket reconnects to the other.
+      - traefik.http.services.realtime-gateway-${ENVIRONMENT:-local}.loadbalancer.sticky.cookie.name=cadenway_realtime_route
+      - traefik.http.services.realtime-gateway-${ENVIRONMENT:-local}.loadbalancer.sticky.cookie.secure=true
+      - traefik.http.services.realtime-gateway-${ENVIRONMENT:-local}.loadbalancer.sticky.cookie.httponly=true
+      - traefik.http.services.realtime-gateway-${ENVIRONMENT:-local}.loadbalancer.sticky.cookie.samesite=lax
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/health/ready']
       interval: 10s

@@ -15,8 +15,12 @@ import {
 import { Module } from '@nestjs/common';
 
 import { appConfigSchema, type AppConfig } from './config/app-config.js';
+import { SocketIoRedisReadiness } from './infrastructure/redis/redis-io.adapter.js';
 import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { ConnectionModule } from './modules/connection/connection.module.js';
+import { PresenceModule } from './modules/presence/presence.module.js';
+import { RelaysModule } from './modules/relays/relays.module.js';
+import { RealtimeAdmissionGates } from './infrastructure/redis/realtime-admission-gates.js';
 
 /**
  * Constant MESSAGING_SERVICE_NAME
@@ -93,12 +97,12 @@ export function messagingOptions(config: AppConfig): MessagingModuleOptions {
  * - `RedisModule` opens the main Redis connection, from which the Socket.IO adapter derives its
  *   own two.
  * - `MessagingModule` opens the NATS connection while the application is created, waiting for the
- *   broker if it is not there yet, then reconnects forever. It consumes nothing yet: the relays
- *   register their consumers when the events exist in `@cadenway/contracts`.
+ *   broker if it is not there yet, then reconnects forever. `RelaysModule` registers the durable
+ *   subscriptions defined in `@cadenway/contracts`.
  * - `HealthModule` serves `GET /health/live`, which checks nothing, and `GET /health/ready`, which
- *   answers 503 while Redis does not answer `PING` or NATS does not answer a flush within one
- *   second, and from the start of the stop (see `SHUTDOWN_DELAY_MS`). Both are what the container
- *   healthcheck and the deployment probe.
+ *   answers 503 until Redis answers `PING` and confirms the Socket.IO subscriptions, while NATS
+ *   does not answer a flush within one second, and from the start of the stop (see
+ *   `SHUTDOWN_DELAY_MS`). Both are what the container healthcheck and the deployment probe.
  * - `ConnectionModule` registers the Socket.IO entry point.
  *
  * Realtime capability modules under `src/modules/` are registered here as they are created.
@@ -110,16 +114,45 @@ export function messagingOptions(config: AppConfig): MessagingModuleOptions {
     MessagingModule.forRootAsync({ inject: [CONFIG], useFactory: messagingOptions }),
     HealthModule.forRootAsync({
       imports: [RedisModule],
-      inject: [ResilientRedisClient, MessagingConnection],
+      inject: [
+        ResilientRedisClient,
+        SocketIoRedisReadiness,
+        MessagingConnection,
+        RealtimeAdmissionGates,
+      ],
       useFactory: (
         redis: ResilientRedisClient,
+        socketIoRedis: SocketIoRedisReadiness,
         nats: MessagingConnection,
-      ): HealthModuleOptions => ({
-        indicators: [redisIndicator(redis), messagingHealthIndicator(nats)],
-        shutdownDelayMs: SHUTDOWN_DELAY_MS,
-      }),
+        admission: RealtimeAdmissionGates,
+      ): HealthModuleOptions => {
+        const redisCheck = redisIndicator(redis);
+        return {
+          indicators: [
+            {
+              ...redisCheck,
+              check: async () => {
+                socketIoRedis.assertAvailable();
+                await redisCheck.check();
+                socketIoRedis.assertAvailable();
+              },
+            },
+            messagingHealthIndicator(nats),
+            {
+              name: 'realtime-admission',
+              check: () =>
+                admission.ready
+                  ? Promise.resolve()
+                  : Promise.reject(new Error('The realtime subscriptions are not ready.')),
+            },
+          ],
+          shutdownDelayMs: SHUTDOWN_DELAY_MS,
+        };
+      },
     }),
+    PresenceModule,
     ConnectionModule,
+    RelaysModule,
   ],
 })
 export class AppModule {}

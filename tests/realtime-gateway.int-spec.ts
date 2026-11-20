@@ -5,7 +5,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '@cadenway/nest-common';
-import { MessagingModule } from '@cadenway/nest-messaging';
+import { EventPublisher, MessagingModule } from '@cadenway/nest-messaging';
+import {
+  COMMENT_CREATED_V1,
+  eventSchemas,
+  SESSION_REVOKED_V1,
+  TASK_STATUS_CHANGED_V1,
+  TASK_UPDATED_V1,
+} from '@cadenway/contracts/events/realtime-gateway';
 import type { INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -19,6 +26,17 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { appConfigSchema, type AppConfig } from '../src/config/app-config.js';
 import { createRealtimeApplication } from '../src/realtime-application.js';
+import { ConnectionRecipients } from '../src/modules/connection/public/connection/connection-recipients.js';
+import {
+  RealtimeUpstreams,
+  listId,
+  organizationId,
+  otherOrganizationId,
+  spaceId,
+  taskId,
+  taskKey,
+  type TestSession,
+} from './support/realtime-upstreams.fixture.js';
 
 /**
  * Constant ALLOWED_ORIGIN
@@ -584,6 +602,30 @@ describe('realtime gateway start-up', () => {
     expect(await waitFor(() => adapterConnections('realtime-gateway'), 1)).toBe(1);
   });
 
+  it('drops a pending Engine.IO session and restores subscriptions after Redis subscriber loss', async () => {
+    const first = await request(server).get(POLLING_HANDSHAKE).set('Origin', ALLOWED_ORIGIN);
+    expect(first.status).toBe(200);
+    const admitted = JSON.parse(first.text.slice(1)) as { sid: string };
+    expect(admitted.sid).toBeTruthy();
+
+    const client = String(await observer.call('CLIENT', 'LIST'))
+      .split('\n')
+      .find((line) => line.includes(' name=realtime-gateway-subscriber '));
+    const subscriberId = /^id=(\d+) /u.exec(client ?? '')?.[1];
+    expect(subscriberId).toBeDefined();
+    expect(await observer.call('CLIENT', 'KILL', 'ID', String(subscriberId))).toBe(1);
+
+    expect(await waitFor(fanOutSubscribers, 1)).toBe(1);
+    expect(await readinessStatus(200)).toBe(200);
+    await request(server)
+      .get(`${POLLING_HANDSHAKE}&sid=${encodeURIComponent(admitted.sid)}`)
+      .set('Origin', ALLOWED_ORIGIN)
+      .expect(400, { code: 1, message: 'Session ID unknown' });
+    const fresh = await request(server).get(POLLING_HANDSHAKE).set('Origin', ALLOWED_ORIGIN);
+    expect(fresh.status).toBe(200);
+    expect((JSON.parse(fresh.text.slice(1)) as { sid: string }).sid).not.toBe(admitted.sid);
+  });
+
   it('exposes nothing of the request a client chose, and answers problem+json', async () => {
     const response: request.Response = await request(server)
       .get('/unknown')
@@ -711,4 +753,354 @@ describe('realtime gateway start-up', () => {
     expect(rejections).toEqual([]);
     expect(logLines.filter((line: string) => line.includes('redis command failed'))).toEqual([]);
   });
+});
+
+describe('realtime relay across two instances', () => {
+  let redis: StartedRedisContainer;
+  let nats: StartedTestContainer;
+  let upstream: RealtimeUpstreams;
+  let publisherContext: INestApplicationContext;
+  let first: { app: NestExpressApplication; url: string };
+  let second: { app: NestExpressApplication; url: string };
+  const sockets: Socket[] = [];
+  const cleanup: (() => Promise<unknown>)[] = [];
+  const alphaId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b31';
+  const betaId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b32';
+  const deniedId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b33';
+
+  function session(userId: string, organization: string, lifetime = 60_000): TestSession {
+    return {
+      userId,
+      organizationId: organization,
+      memberId: userId,
+      sessionId: userId,
+      sessionVersion: 1,
+      role: 'member',
+      sessionExpiresAt: new Date(Date.now() + lifetime).toISOString(),
+    };
+  }
+
+  async function connect(url: string, token: string): Promise<Socket> {
+    const socket = io(url, {
+      autoConnect: false,
+      transports: ['websocket'],
+      reconnection: false,
+      forceNew: true,
+      auth: { token },
+      extraHeaders: { Origin: ALLOWED_ORIGIN },
+    });
+    sockets.push(socket);
+    const ready = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Socket did not become ready.'));
+      }, 10_000);
+      socket.once('hello', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      socket.once('connect_error', (error: Error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      socket.once('disconnect', () => {
+        clearTimeout(timeout);
+        reject(new Error('Socket closed before readiness.'));
+      });
+    });
+    socket.connect();
+    await ready;
+    return socket;
+  }
+
+  async function join(socket: Socket): Promise<unknown> {
+    return socket
+      .timeout(5_000)
+      .emitWithAck('room:join', { kind: 'task', taskKey }) as Promise<unknown>;
+  }
+
+  beforeAll(async () => {
+    const adminPassword = brokerPassword();
+    const gatewayPassword = brokerPassword();
+    redis = await new RedisContainer(composeImage('redis')).start();
+    cleanup.push(() => redis.stop());
+    nats = await startBroker(adminPassword, gatewayPassword);
+    cleanup.push(() => nats.stop());
+    const natsUrl = `nats://${nats.getHost()}:${String(nats.getMappedPort(4222))}`;
+    await createStreams(natsUrl, adminPassword);
+    const env = testEnvironment(redis.getConnectionUrl(), natsUrl, gatewayPassword);
+    upstream = await RealtimeUpstreams.start(env.INTERNAL_TOKEN_PRIVATE_JWK ?? '');
+    cleanup.push(() => upstream.close());
+    env.IDENTITY_SERVICE_URL = upstream.url;
+    env.TASK_SERVICE_URL = upstream.url;
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+    const config = loadConfig(appConfigSchema);
+    publisherContext = await NestFactory.createApplicationContext(
+      MessagingModule.forRoot({
+        service: 'realtime-test-publisher',
+        servers: natsUrl,
+        user: 'admin',
+        password: adminPassword,
+        manageStreams: false,
+      }),
+      { logger: false },
+    );
+    cleanup.push(() => publisherContext.close());
+    first = await startApplication(config, []);
+    cleanup.push(() => first.app.close());
+    second = await startApplication(config, []);
+    cleanup.push(() => second.app.close());
+    await waitFor(
+      async () => (await request(first.app.getHttpServer() as App).get('/health/ready')).status,
+      200,
+    );
+    await waitFor(
+      async () => (await request(second.app.getHttpServer() as App).get('/health/ready')).status,
+      200,
+    );
+  }, 120_000);
+
+  afterAll(async () => {
+    for (const socket of sockets) socket.disconnect();
+    try {
+      for (const close of cleanup.reverse()) await close();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('isolates organizations, rechecks task access and closes a revoked session', async () => {
+    const alphaTicket = 'a'.repeat(43);
+    const betaTicket = 'b'.repeat(43);
+    const deniedTicket = 'c'.repeat(43);
+    const otherTicket = 'd'.repeat(43);
+    upstream.issue(alphaTicket, session(alphaId, organizationId), true);
+    upstream.issue(betaTicket, session(betaId, organizationId), true);
+    upstream.issue(deniedTicket, session(deniedId, organizationId), false);
+    upstream.issue(
+      otherTicket,
+      session('019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b34', otherOrganizationId),
+      true,
+    );
+    const [alpha, beta, denied, other] = await Promise.all([
+      connect(first.url, alphaTicket),
+      connect(second.url, betaTicket),
+      connect(first.url, deniedTicket),
+      connect(second.url, otherTicket),
+    ]);
+    expect(await join(alpha)).toEqual({ ok: true });
+    expect(await join(beta)).toEqual({ ok: true });
+    expect(await join(denied)).toEqual({ ok: false, code: 'room.not-found' });
+    expect(await join(other)).toEqual({ ok: false, code: 'room.not-found' });
+    const recipients = await first.app.get(ConnectionRecipients).readTask(organizationId, taskKey);
+    expect(recipients.map((recipient) => recipient.session.userId).sort()).toEqual(
+      [alphaId, betaId].sort(),
+    );
+
+    const received = {
+      alpha: [] as unknown[],
+      beta: [] as unknown[],
+      denied: [] as unknown[],
+      other: [] as unknown[],
+    };
+    const collect = (target: unknown[], packet: unknown): void => {
+      const envelope = packet as { type?: string };
+      if (envelope.type !== 'user.status-changed.v1') target.push(packet);
+    };
+    alpha.on('change', (packet: unknown) => {
+      collect(received.alpha, packet);
+    });
+    beta.on('change', (packet: unknown) => {
+      collect(received.beta, packet);
+    });
+    denied.on('change', (packet: unknown) => {
+      collect(received.denied, packet);
+    });
+    other.on('change', (packet: unknown) => {
+      collect(received.other, packet);
+    });
+    const publisher = publisherContext.get(EventPublisher);
+    const sent = await publisher.publish(eventSchemas, TASK_STATUS_CHANGED_V1, {
+      organizationId,
+      actor: { type: 'user', id: alphaId },
+      version: 2,
+      key: taskKey,
+      spaceId,
+      listId,
+      parentKey: null,
+      name: 'Fixture task',
+      status: 'review',
+      previousStatus: 'progress',
+      cancelReason: null,
+      cancelNote: null,
+      priority: 'haute',
+      assigneeIds: [],
+      dueDate: null,
+      startDate: null,
+      estimateMinutes: null,
+      labels: [],
+      completedAt: null,
+    });
+    expect(await waitFor(() => Promise.resolve(received.alpha.length), 1)).toBe(1);
+    expect(await waitFor(() => Promise.resolve(received.beta.length), 1)).toBe(1);
+    expect(received.alpha[0]).toMatchObject({
+      id: sent.id,
+      type: TASK_STATUS_CHANGED_V1,
+      data: { taskId, changed: ['status'] },
+    });
+    expect(received.beta[0]).toEqual(received.alpha[0]);
+    expect(received.denied).toEqual([]);
+    expect(received.other).toEqual([]);
+    expect(upstream.taskChecks).toBeGreaterThanOrEqual(4);
+
+    const updated = await publisher.publish(eventSchemas, TASK_UPDATED_V1, {
+      organizationId,
+      actor: { type: 'user', id: alphaId },
+      version: 3,
+      key: taskKey,
+      spaceId,
+      listId,
+      parentKey: null,
+      name: 'Updated fixture task',
+      status: 'review',
+      cancelReason: null,
+      priority: 'haute',
+      assigneeIds: [],
+      dueDate: null,
+      startDate: null,
+      estimateMinutes: null,
+      labels: [],
+      completedAt: null,
+      changed: ['name'],
+    });
+    expect(await waitFor(() => Promise.resolve(received.alpha.length), 2)).toBe(2);
+    expect(await waitFor(() => Promise.resolve(received.beta.length), 2)).toBe(2);
+    expect(received.alpha[1]).toMatchObject({
+      id: updated.id,
+      type: TASK_UPDATED_V1,
+      data: { taskId, changed: ['name'] },
+    });
+
+    const commentId = '019a7003-4d5e-7f6a-8b9c-0d1e2f3a4b01';
+    const comment = await publisher.publish(eventSchemas, COMMENT_CREATED_V1, {
+      organizationId,
+      actor: { type: 'user', id: alphaId },
+      version: 3,
+      key: taskKey,
+      spaceId,
+      listId,
+      commentId,
+      commentVersion: 1,
+      mentionedUserIds: [],
+      watcherIds: [],
+    });
+    expect(await waitFor(() => Promise.resolve(received.alpha.length), 3)).toBe(3);
+    expect(await waitFor(() => Promise.resolve(received.beta.length), 3)).toBe(3);
+    expect(received.beta[2]).toMatchObject({
+      id: comment.id,
+      type: COMMENT_CREATED_V1,
+      data: { taskId, commentId },
+    });
+
+    const hold = upstream.holdTask(alphaId);
+    const pending = await publisher.publish(eventSchemas, COMMENT_CREATED_V1, {
+      organizationId,
+      actor: { type: 'user', id: betaId },
+      version: 4,
+      key: taskKey,
+      spaceId,
+      listId,
+      commentId,
+      commentVersion: 2,
+      mentionedUserIds: [],
+      watcherIds: [],
+    });
+    await Promise.race([
+      hold.entered,
+      delay(5_000).then(() => {
+        throw new Error('The pending Task authorization was not requested.');
+      }),
+    ]);
+    const revoked = new Promise<void>((resolve) =>
+      alpha.once('disconnect', () => {
+        resolve();
+      }),
+    );
+    await publisher.publish(eventSchemas, SESSION_REVOKED_V1, {
+      organizationId: null,
+      actor: { type: 'user', id: alphaId },
+      version: 2,
+      sessionId: alphaId,
+      userId: alphaId,
+    });
+    try {
+      await Promise.race([
+        revoked,
+        delay(10_000).then(() => {
+          throw new Error('Revocation was not delivered.');
+        }),
+      ]);
+    } finally {
+      hold.release();
+    }
+    expect(alpha.connected).toBe(false);
+    expect(beta.connected).toBe(true);
+    expect(await waitFor(() => Promise.resolve(received.beta.length), 4)).toBe(4);
+    expect(received.beta[3]).toMatchObject({ id: pending.id });
+
+    await expect(connect(first.url, alphaTicket)).rejects.toThrow(
+      'Socket closed before readiness.',
+    );
+    const next = await publisher.publish(eventSchemas, COMMENT_CREATED_V1, {
+      organizationId,
+      actor: { type: 'user', id: betaId },
+      version: 5,
+      key: taskKey,
+      spaceId,
+      listId,
+      commentId,
+      commentVersion: 3,
+      mentionedUserIds: [],
+      watcherIds: [],
+    });
+    expect(await waitFor(() => Promise.resolve(received.beta.length), 5)).toBe(5);
+    expect(received.beta[4]).toMatchObject({ id: next.id });
+    await delay(300);
+    expect(received.alpha).toHaveLength(3);
+  }, 40_000);
+
+  it('publishes offline when the last presence lease expires', async () => {
+    const observerId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b35';
+    const transientId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b36';
+    upstream.issue('e'.repeat(43), session(observerId, organizationId), true);
+    upstream.issue('f'.repeat(43), session(transientId, organizationId, 5_000), true);
+    const observer = await connect(first.url, 'e'.repeat(43));
+    const notices: unknown[] = [];
+    observer.on('change', (packet: unknown) => notices.push(packet));
+    const transient = await connect(second.url, 'f'.repeat(43));
+    expect(await waitFor(() => Promise.resolve(notices.length > 0), true)).toBe(true);
+    await new Promise<void>((resolve) =>
+      transient.once('disconnect', () => {
+        resolve();
+      }),
+    );
+    expect(
+      await waitFor(
+        () =>
+          Promise.resolve(
+            notices.some((notice) => {
+              const packet = notice as {
+                type?: string;
+                data?: { memberId?: string; status?: string };
+              };
+              return (
+                packet.type === 'user.status-changed.v1' &&
+                packet.data?.memberId === transientId &&
+                packet.data.status === 'offline'
+              );
+            }),
+          ),
+        true,
+      ),
+    ).toBe(true);
+  }, 20_000);
 });
