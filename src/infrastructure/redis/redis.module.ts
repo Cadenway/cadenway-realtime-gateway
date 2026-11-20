@@ -3,15 +3,16 @@ import { ResilientRedisClient } from '@cadenway/nest-common/redis';
 import { Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 
 import type { AppConfig } from '../../config/app-config.js';
+import { RealtimeAdmissionGates } from './realtime-admission-gates.js';
+import { SocketIoRedisReadiness } from './redis-io.adapter.js';
 
 /**
  * Constant CONNECTION_NAME
  *
  * @description
  * Name the main connection announces with `CLIENT SETNAME`, so `CLIENT LIST` on the shared Redis
- * of an environment tells the realtime gateway apart from the API gateway. The two connections of
- * the Socket.IO adapter, derived from it by `createPubSubClients`, append `-publisher` and
- * `-subscriber`.
+ * of an environment tells the realtime gateway apart from the API gateway. The Socket.IO adapter
+ * connections append `-publisher` and `-subscriber`.
  *
  * @type {string}
  */
@@ -29,8 +30,8 @@ export const CONNECTION_NAME: string = 'realtime-gateway';
  * - The connection is opened at start-up from `REDIS_URL` without waiting for it: the application
  *   starts while Redis is still unreachable, and readiness answers 503 until it is ready.
  * - The offline queue is disabled: while Redis is unreachable a command fails at once instead of
- *   waiting for the reconnection, so readiness reports the outage and nothing waits on a counter.
- *   The client keeps reconnecting on its own.
+ *   waiting for the reconnection. In-flight commands are not replayed after a loss. Readiness
+ *   checks the command connection and the Socket.IO subscriptions. The client keeps reconnecting.
  * - The client logs an outage once (`redis unreachable`, with an error code at most, never the
  *   address) and its end once (`redis reachable again`); it attaches a handler to every command it
  *   sends, so a command nobody awaits cannot stop the process.
@@ -48,10 +49,14 @@ export const CONNECTION_NAME: string = 'realtime-gateway';
         new ResilientRedisClient(config.REDIS_URL, {
           connectionName: CONNECTION_NAME,
           enableOfflineQueue: false,
+          autoResendUnfulfilledCommands: false,
+          maxRetriesPerRequest: 0,
         }),
     },
+    SocketIoRedisReadiness,
+    RealtimeAdmissionGates,
   ],
-  exports: [ResilientRedisClient],
+  exports: [ResilientRedisClient, SocketIoRedisReadiness, RealtimeAdmissionGates],
 })
 export class RedisModule implements OnApplicationShutdown {
   // #region Properties

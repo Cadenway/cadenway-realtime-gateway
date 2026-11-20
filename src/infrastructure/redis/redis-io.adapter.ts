@@ -1,169 +1,308 @@
 import type { IncomingMessage } from 'node:http';
 
-import { createPubSubClients, type PubSubClients } from '@cadenway/nest-common/redis';
+import { pubSubClientOptions, ResilientRedisClient } from '@cadenway/nest-common/redis';
 import type { INestApplicationContext } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import type { Redis } from 'ioredis';
-import type { Server, ServerOptions } from 'socket.io';
+import type { Server, ServerOptions, Socket } from 'socket.io';
 
-/**
- * Constant REFUSED_ORIGIN_MESSAGE
- *
- * @description
- * Message of the 403 a handshake from an origin outside `ALLOWED_ORIGINS` receives. It repeats
- * nothing of the request.
- *
- * @type {string}
- */
-const REFUSED_ORIGIN_MESSAGE: string = 'Origin not allowed';
+import type { RealtimeAdmissionGates } from './realtime-admission-gates.js';
+import { RedisSubscriptionRecovery } from './redis-subscription-recovery.js';
 
-/**
- * Class RedisIoAdapter
- *
- * @description
- * Socket.IO adapter of the realtime gateway, registered with `app.useWebSocketAdapter` before the
- * application initializes, so every `@WebSocketGateway` runs on the server it creates.
- *
- * - Fan-out: `@socket.io/redis-adapter` publishes what this instance broadcasts and receives what
- *   the others broadcast, through the publisher and the subscriber `createPubSubClients` of
- *   `@cadenway/nest-common/redis` opens from the options of the main Redis connection. Their
- *   offline queue stays on and a queued command waits without limit, because the adapter
- *   subscribes as soon as it is created, usually before Redis answers; and, as
- *   `ResilientRedisClient`s, they settle the promise of every command the adapter drops, so a
- *   failed `PUBLISH` or `UNSUBSCRIBE` cannot stop the process. While Redis is down, broadcasts wait
- *   in memory, the main connection logs the outage once for the three, and readiness answers 503.
- * - Handshake: browsers do not apply CORS to a WebSocket upgrade, so `allowRequest` compares the
- *   `Origin` of every new connection, WebSocket or long-polling, to `ALLOWED_ORIGINS` by exact
- *   string equality. A request without `Origin` or from another origin is refused with 403 before
- *   it reaches a gateway. Authentication (the single-use ticket in `auth.token`) comes after.
- * - The long-polling transport answers CORS for the same origins, with credentials.
- * - The client bundle is not served: the web application ships its own `socket.io-client`.
- *
- * Connection state recovery stays off, as `rules/connection.md` requires: the Redis adapter does
- * not support it.
- */
+const refusedOrigin = 'Origin not allowed';
+const unavailable = 'Realtime unavailable';
+const lostEvents = ['close', 'reconnecting', 'end'] as const;
+
+/** Combines Redis fan-out readiness for the servers owned by one application. */
+export class SocketIoRedisReadiness {
+  // #region Properties
+  /** Readiness of each registered server. */
+  private readonly checks = new Set<() => boolean>();
+  // #endregion
+
+  // #region Methods
+  /** Registers one server and returns its disposal callback. */
+  public track(check: () => boolean): () => void {
+    this.checks.add(check);
+    return () => {
+      this.checks.delete(check);
+    };
+  }
+
+  /** Reports an outage even if the command connection still answers PING. */
+  public assertAvailable(): void {
+    if (this.checks.size === 0 || ![...this.checks].every((check) => check())) {
+      throw new Error(unavailable);
+    }
+  }
+  // #endregion
+}
+
+/** Installs a Redis fan-out adapter and admits a fresh connection only while Redis is available. */
 export class RedisIoAdapter extends IoAdapter {
   // #region Properties
-  /**
-   * Property allowedOrigins
-   *
-   * @description
-   * Exact origins a handshake may come from, as validated by `ALLOWED_ORIGINS`.
-   *
-   * @type {ReadonlySet<string>}
-   * @readonly
-   */
+  /** Exact browser origins for both transports. */
   private readonly allowedOrigins: ReadonlySet<string>;
 
-  /**
-   * Property redis
-   *
-   * @description
-   * Main Redis connection, whose options the adapter connections start from.
-   *
-   * @type {Redis}
-   * @readonly
-   */
-  private readonly redis: Redis;
-
-  /**
-   * Property clients
-   *
-   * @description
-   * Publisher and subscriber of each server this adapter created, closed by `dispose`.
-   *
-   * @type {PubSubClients[]}
-   * @readonly
-   */
-  private readonly clients: PubSubClients[] = [];
+  /** Disposal callbacks for the servers created by Nest. */
+  private readonly disposeClients: (() => Promise<void>)[] = [];
   // #endregion
 
   // #region Constructor
-  /**
-   * Constructor
-   *
-   * @description
-   * Prepares the adapter; no Redis connection is opened before `createIOServer`.
-   *
-   * @param {INestApplicationContext} app - Application whose HTTP server Socket.IO attaches to.
-   * @param {Redis} redis - Main Redis connection of the gateway.
-   * @param {readonly string[]} allowedOrigins - Exact origins allowed to open a socket.
-   * @constructor
-   */
+  /** Keeps the command connection and readiness check for future Socket.IO servers. */
   public constructor(
     app: INestApplicationContext,
-    redis: Redis,
+    private readonly redis: Redis,
     allowedOrigins: readonly string[],
+    private readonly readiness: SocketIoRedisReadiness,
+    private readonly gates?: RealtimeAdmissionGates,
   ) {
     super(app);
-    this.redis = redis;
     this.allowedOrigins = new Set(allowedOrigins);
   }
   // #endregion
 
   // #region Methods
-  /**
-   * Method createIOServer
-   *
-   * @description
-   * Creates the Socket.IO server with the origin check, CORS and the Redis fan-out, whatever the
-   * options of the `@WebSocketGateway` decorator say on those points.
-   *
-   * @param {number} port - Port of the gateway; 0 attaches to the HTTP server of the application.
-   * @param {ServerOptions} options - Options of the `@WebSocketGateway` decorator, if any.
-   * @returns {Server} The Socket.IO server.
-   */
+  /** Applies identical origin and Redis guards to long polling and WebSocket upgrades. */
   public override createIOServer(port: number, options?: ServerOptions): Server {
+    const admissions = new WeakMap<IncomingMessage, number>();
+    const transports = new Set<Socket['conn']>();
+    let epoch = 0;
     const serverOptions: Partial<ServerOptions> = {
       ...options,
       serveClient: false,
+      connectionStateRecovery: undefined,
       cors: { origin: [...this.allowedOrigins], credentials: true },
-      allowRequest: (
-        request: IncomingMessage,
-        callback: (error: string | null | undefined, success: boolean) => void,
-      ): void => {
-        const allowed: boolean = this.isAllowedOrigin(request.headers.origin);
-        callback(allowed ? null : REFUSED_ORIGIN_MESSAGE, allowed);
+      allowRequest: (request, callback) => {
+        if (!this.isAllowedOrigin(request.headers.origin)) {
+          callback(refusedOrigin, false);
+          return;
+        }
+        if (!available()) {
+          callback(unavailable, false);
+          return;
+        }
+        admissions.set(request, epoch);
+        callback(null, true);
       },
     };
-    // NestJS types the options as complete, while the Socket.IO server takes a partial set and
-    // fills in its defaults.
+    // Nest types these options as complete although Socket.IO supplies the remaining defaults.
     const server: Server = super.createIOServer(port, serverOptions as ServerOptions);
-    const clients: PubSubClients = createPubSubClients(this.redis);
-    this.clients.push(clients);
-    server.adapter(createAdapter(clients.publisher, clients.subscriber));
+    const closeTransports = (): void => {
+      epoch += 1;
+      for (const transport of transports) transport.close(true);
+    };
+    const fanOut = new SocketIoRedisFanOut(this.redis, closeTransports);
+    const available = (): boolean => fanOut.available && (this.gates?.ready ?? true);
+    const isCurrent = (request: IncomingMessage): boolean =>
+      available() && admissions.get(request) === epoch;
+
+    server.adapter(createAdapter(fanOut.publisher, fanOut.subscriber));
+    server.engine.on('connection', (transport: Socket['conn']) => {
+      if (!isCurrent(transport.request)) {
+        transport.close(true);
+        return;
+      }
+      // Include an Engine.IO transport still waiting to open its first Socket.IO namespace.
+      transports.add(transport);
+      transport.once('close', () => transports.delete(transport));
+    });
+    const guardNamespace = (socket: Socket, next: (error?: Error) => void): void => {
+      next(isCurrent(socket.request) ? undefined : new Error(unavailable));
+    };
+    server.use(guardNamespace);
+    server.on('new_namespace', (namespace) => namespace.use(guardNamespace));
+
+    const untrack = this.readiness.track(() => fanOut.available);
+    const unwatch = this.gates?.onUnavailable(closeTransports);
+    this.disposeClients.push(async () => {
+      untrack();
+      unwatch?.();
+      await fanOut.shutDown();
+    });
     return server;
   }
 
-  /**
-   * Method isAllowedOrigin
-   *
-   * @description
-   * Tells whether an `Origin` header names one of the allowed origins, exactly.
-   *
-   * @param {string | undefined} origin - `Origin` header of the handshake, absent outside a browser.
-   * @returns {boolean} `true` for an allowed origin; `false` for any other or none.
-   */
+  /** Checks the origin before the gateway sees a credential. */
   public isAllowedOrigin(origin: string | undefined): boolean {
     return origin !== undefined && this.allowedOrigins.has(origin);
   }
 
-  /**
-   * Method dispose
-   *
-   * @description
-   * Closes the adapter connections once NestJS closed the Socket.IO servers, before the main
-   * connection closes. A ready connection is closed with `QUIT`, after the unsubscriptions the
-   * adapter sent while its server closed; any other state closes the socket at once, drops the
-   * commands still queued without a log line and stops the reconnection attempts.
-   *
-   * @returns {Promise<void>} Resolves once both connections of every server are closed.
-   */
+  /** Detaches Redis watchers and closes the adapter clients after Nest closes Socket.IO. */
   public override async dispose(): Promise<void> {
-    await Promise.all(
-      this.clients.splice(0).map(async (clients: PubSubClients) => clients.shutDown()),
+    await Promise.all(this.disposeClients.splice(0).map((dispose) => dispose()));
+  }
+  // #endregion
+}
+
+/** Owns the two Redis connections and the acknowledged subscriptions of one Socket.IO server. */
+class SocketIoRedisFanOut {
+  // #region Properties
+  /** Exact subscription names requested by the Socket.IO Redis adapter. */
+  private readonly channels = new Set<string>();
+
+  /** Exact pattern subscriptions requested by the same adapter. */
+  private readonly patterns = new Set<string>();
+
+  /** Recovers acknowledgements for the active subscription set. */
+  private readonly subscriptions: RedisSubscriptionRecovery;
+
+  /** Whether shutdown has begun. */
+  private closed = false;
+
+  /** Redis socket for outbound packets. */
+  private readonly publishing: ResilientRedisClient;
+
+  /** Redis socket for restoring and receiving subscriptions. */
+  private readonly listening: ResilientRedisClient;
+
+  /** Socket.IO's ioredis publishing interface. Drops messages during outages. */
+  public readonly publisher;
+
+  /** Socket.IO's ioredis subscription interface. Retains only channel and pattern names. */
+  public readonly subscriber;
+
+  /** Subscription restoration listener. */
+  private readonly onSubscriberReady = (): void => {
+    this.subscriptions.resume();
+  };
+
+  /** Invalidates every local transport when the command or publication connection is lost. */
+  private readonly onConnectionLost = (): void => {
+    this.disconnectTransports();
+  };
+
+  /** Invalidate old ACKs as well as local transports when the subscriber loses its connection. */
+  private readonly onSubscriberLost = (): void => {
+    this.subscriptions.invalidate();
+    this.disconnectTransports();
+  };
+
+  /** Availability requires Redis readiness and confirmed subscription acknowledgements. */
+  public get available(): boolean {
+    return (
+      !this.closed &&
+      this.command.status === 'ready' &&
+      this.publishing.status === 'ready' &&
+      this.listening.status === 'ready' &&
+      this.subscriptions.ready
     );
+  }
+  // #endregion
+
+  // #region Constructor
+  /** Creates bounded Redis clients and observes connection loss before permitting handshakes. */
+  public constructor(
+    private readonly command: Redis,
+    private readonly disconnectTransports: () => void,
+  ) {
+    this.publishing = this.openClient('publisher');
+    this.listening = this.openClient('subscriber');
+    this.subscriptions = new RedisSubscriptionRecovery(
+      () => this.listening.status === 'ready',
+      () => this.subscribeCurrent(),
+    );
+    this.publisher = {
+      on: this.publishing.on.bind(this.publishing),
+      off: this.publishing.off.bind(this.publishing),
+      publish: (channel: string, payload: string | Buffer): Promise<number> =>
+        this.available ? this.publishing.publish(channel, payload) : Promise.resolve(0),
+      send_command: (
+        command: string,
+        args: string[],
+        callback: (error: Error | null, result?: unknown) => void,
+      ): void => {
+        const channel = args[1];
+        if (
+          command !== 'PUBSUB' ||
+          args.length !== 2 ||
+          args[0] !== 'NUMSUB' ||
+          channel === undefined ||
+          !this.available
+        ) {
+          callback(new Error(unavailable));
+          return;
+        }
+        void this.publishing.call('PUBSUB', 'NUMSUB', channel).then(
+          (result) => {
+            callback(null, result);
+          },
+          (error: unknown) => {
+            callback(error instanceof Error ? error : new Error(unavailable));
+          },
+        );
+      },
+    };
+    this.subscriber = {
+      on: this.listening.on.bind(this.listening),
+      off: this.listening.off.bind(this.listening),
+      subscribe: (channels: readonly string[]): void => {
+        const previousCount = this.channels.size;
+        for (const channel of channels) this.channels.add(channel);
+        if (this.channels.size !== previousCount) this.subscribeNew();
+      },
+      psubscribe: (pattern: string): void => {
+        if (this.patterns.has(pattern)) return;
+        this.patterns.add(pattern);
+        this.subscribeNew();
+      },
+      unsubscribe: (channels: readonly string[]): void => {
+        for (const channel of channels) this.channels.delete(channel);
+        if (this.listening.status === 'ready') void this.listening.unsubscribe(...channels);
+      },
+      punsubscribe: (pattern: string): void => {
+        this.patterns.delete(pattern);
+        if (this.listening.status === 'ready') void this.listening.punsubscribe(pattern);
+      },
+    };
+    this.listening.on('ready', this.onSubscriberReady);
+    for (const event of lostEvents) {
+      this.command.on(event, this.onConnectionLost);
+      this.publishing.on(event, this.onConnectionLost);
+      this.listening.on(event, this.onSubscriberLost);
+    }
+  }
+  // #endregion
+
+  // #region Methods
+  /** Keeps kit connection naming and error handling while disabling every command replay. */
+  private openClient(role: 'publisher' | 'subscriber'): ResilientRedisClient {
+    return new ResilientRedisClient({
+      ...pubSubClientOptions(this.command.options, role),
+      enableOfflineQueue: false,
+      autoResendUnfulfilledCommands: false,
+      autoResubscribe: false,
+      maxRetriesPerRequest: 0,
+    });
+  }
+
+  /** Requires a fresh acknowledgement when the adapter adds subscriptions. */
+  private subscribeNew(): void {
+    this.subscriptions.invalidate();
+    this.subscriptions.resume();
+  }
+
+  /** Waits for every command to settle before the next attempt can subscribe. */
+  private async subscribeCurrent(): Promise<boolean> {
+    const pending: Promise<unknown>[] = [];
+    if (this.channels.size > 0) pending.push(this.listening.subscribe(...this.channels));
+    if (this.patterns.size > 0) pending.push(this.listening.psubscribe(...this.patterns));
+    const results = await Promise.allSettled(pending);
+    return results.every(({ status }) => status === 'fulfilled');
+  }
+
+  /** Removes watchers and closes both connections without replaying outstanding packets. */
+  public async shutDown(): Promise<void> {
+    this.closed = true;
+    this.subscriptions.stop();
+    this.listening.off('ready', this.onSubscriberReady);
+    for (const event of lostEvents) {
+      this.command.off(event, this.onConnectionLost);
+      this.publishing.off(event, this.onConnectionLost);
+      this.listening.off(event, this.onSubscriberLost);
+    }
+    await Promise.all([this.publishing.shutDown(), this.listening.shutDown()]);
   }
   // #endregion
 }

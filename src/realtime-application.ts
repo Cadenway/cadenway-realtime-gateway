@@ -4,8 +4,9 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 
 import { AppModule } from './app.module.js';
+import { RealtimeAdmissionGates } from './infrastructure/redis/realtime-admission-gates.js';
 import type { AppConfig } from './config/app-config.js';
-import { RedisIoAdapter } from './infrastructure/redis/redis-io.adapter.js';
+import { RedisIoAdapter, SocketIoRedisReadiness } from './infrastructure/redis/redis-io.adapter.js';
 
 /**
  * Constant SERVICE_NAME
@@ -105,7 +106,13 @@ export async function createRealtimeApplication(
     maxAge: CORS_MAX_AGE_SECONDS,
   });
   app.useWebSocketAdapter(
-    new RedisIoAdapter(app, app.get(ResilientRedisClient), config.ALLOWED_ORIGINS),
+    new RedisIoAdapter(
+      app,
+      app.get(ResilientRedisClient),
+      config.ALLOWED_ORIGINS,
+      app.get(SocketIoRedisReadiness),
+      app.get(RealtimeAdmissionGates),
+    ),
   );
   return app;
 }
