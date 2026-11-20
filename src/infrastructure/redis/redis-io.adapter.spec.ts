@@ -301,14 +301,38 @@ describe('RedisIoAdapter connection lifecycle', () => {
     staleAck.resolve(3);
     await request(url).get(polling).set('Origin', origin).expect(403);
 
-    currentAck.reject(new Error('Redis refused the subscription.'));
-    await request(url).get(polling).set('Origin', origin).expect(403);
-    expect(() => {
-      readiness.assertAvailable();
-    }).toThrow('Realtime unavailable');
-
     subscriber.transition('end');
     subscriber.transition('ready');
+    currentAck.resolve(3);
     await waitForReady(readiness);
+    expect(subscriber.channels).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries subscription on the same connection after all commands from the first attempt settle', async () => {
+    const { command, publisher, subscriber, readiness } = await fixture();
+    const patternAck = pendingAcknowledgement();
+    subscriber.channels.mockRejectedValueOnce(new Error('Temporary subscription failure.'));
+    subscriber.patterns.mockReturnValueOnce(patternAck.promise);
+    vi.useFakeTimers();
+    try {
+      command.transition('ready');
+      publisher.transition('ready');
+      subscriber.transition('ready');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(subscriber.channels).toHaveBeenCalledOnce();
+      expect(() => {
+        readiness.assertAvailable();
+      }).toThrow('Realtime unavailable');
+
+      patternAck.resolve(1);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(subscriber.channels).toHaveBeenCalledTimes(2);
+      expect(subscriber.patterns).toHaveBeenCalledTimes(2);
+      expect(() => {
+        readiness.assertAvailable();
+      }).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

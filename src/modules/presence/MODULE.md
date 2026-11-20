@@ -6,8 +6,10 @@ The first socket makes a member visible. The last disconnection or expiration ma
 Invisible is a private preference and is emitted as offline. Members and leases are partitioned by
 organization. Redis publishes a transition only on that organization's private presence channel.
 
-The connection gateway invokes the capability only after checking the socket registry. A Redis
-subscription bridge validates each organization-scoped transition and passes the common
+Presence changes verify the socket registration and current session, membership and tenant lease
+in the same Redis script that updates the preference or publishes a transition. A revoked or
+expired socket can still have its presence lease removed. A Redis subscription bridge validates
+each organization-scoped transition and passes the common
 `user.status-changed.v1` envelope to Connection for delivery to valid local sockets. Each instance
 delivers to its own sockets to avoid a duplicate cross-instance broadcast. Its acknowledged
 subscription is an admission prerequisite and loss of the connection closes local transports.

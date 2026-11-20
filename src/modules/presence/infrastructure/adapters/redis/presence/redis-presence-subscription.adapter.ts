@@ -1,6 +1,8 @@
 import type { Redis } from 'ioredis';
 import { z } from 'zod';
 
+import { RedisSubscriptionRecovery } from '../../../../../../infrastructure/redis/redis-subscription-recovery.js';
+
 const pattern = 'realtime:presence:org:*';
 const channelPattern = /^realtime:presence:org:([0-9a-f-]{36})$/u;
 const messageSchema = z.strictObject({
@@ -13,21 +15,21 @@ const messageSchema = z.strictObject({
 /** Receives committed visible transitions for local, already-authorized sockets. */
 export class RedisPresenceSubscription {
   // #region Properties
-  /** Connection, acknowledged epoch and listeners for this local subscription. */
+  /** Dedicated connection and acknowledgement recovery for this replica. */
   private readonly subscriber: Redis;
+  private readonly subscription: RedisSubscriptionRecovery;
+
+  /** Tracks only deliveries in progress; a newer transition supersedes the old one. */
+  private readonly deliveries = new Map<string, symbol>();
   private readonly unavailable = new Set<() => void>();
-  private epoch = 0;
-  private subscribed = false;
-  private closed = false;
   private readonly untrack: () => void;
 
   /** True after Redis has acknowledged the subscription in its current connection. */
   public get ready(): boolean {
     return (
-      !this.closed &&
       this.command.status === 'ready' &&
       this.subscriber.status === 'ready' &&
-      this.subscribed
+      this.subscription.ready
     );
   }
   // #endregion
@@ -36,7 +38,11 @@ export class RedisPresenceSubscription {
   /** Uses a dedicated subscription connection and an explicitly local delivery callback. */
   public constructor(
     private readonly command: Redis,
-    private readonly deliver: (organizationId: string, packet: unknown) => Promise<void>,
+    private readonly deliver: (
+      organizationId: string,
+      packet: unknown,
+      stillCurrent: () => boolean,
+    ) => Promise<void>,
     register: (
       check: () => boolean,
       onUnavailable: (listener: () => void) => () => void,
@@ -49,6 +55,10 @@ export class RedisPresenceSubscription {
       autoResendUnfulfilledCommands: false,
       maxRetriesPerRequest: 0,
     });
+    this.subscription = new RedisSubscriptionRecovery(
+      () => this.command.status === 'ready' && this.subscriber.status === 'ready',
+      async () => (await this.subscriber.psubscribe(pattern)) === 1,
+    );
     this.subscriber.on('error', () => undefined);
     this.command.on('close', this.lost);
     this.command.on('ready', this.subscribe);
@@ -59,7 +69,7 @@ export class RedisPresenceSubscription {
       () => this.ready,
       (listener) => this.onUnavailable(listener),
     );
-    if (this.subscriber.status === 'ready') this.subscribe();
+    this.subscription.resume();
   }
   // #endregion
 
@@ -74,8 +84,8 @@ export class RedisPresenceSubscription {
 
   /** Closes the dedicated connection and removes listeners at shutdown. */
   public async onApplicationShutdown(): Promise<void> {
-    this.closed = true;
     this.lost();
+    this.subscription.stop();
     this.untrack();
     this.command.off('close', this.lost);
     this.command.off('ready', this.subscribe);
@@ -90,25 +100,15 @@ export class RedisPresenceSubscription {
   // #region Properties
   /** Invalidates pending acknowledgements on Redis connection loss. */
   private readonly lost = (): void => {
-    this.epoch += 1;
-    this.subscribed = false;
-    for (const listener of this.unavailable) listener();
+    const wasSubscribed = this.subscription.ready;
+    this.subscription.invalidate();
+    this.deliveries.clear();
+    if (wasSubscribed) for (const listener of this.unavailable) listener();
   };
 
   /** Restores the exact subscription after reconnecting. */
   private readonly subscribe = (): void => {
-    if (this.closed || this.subscriber.status !== 'ready' || this.command.status !== 'ready')
-      return;
-    const epoch = ++this.epoch;
-    this.subscribed = false;
-    void this.subscriber.psubscribe(pattern).then(
-      () => {
-        if (!this.closed && epoch === this.epoch) this.subscribed = true;
-      },
-      () => {
-        if (epoch === this.epoch) this.lost();
-      },
-    );
+    this.subscription.resume();
   };
 
   /** Validates the organization and committed transition before local delivery. */
@@ -126,13 +126,19 @@ export class RedisPresenceSubscription {
     const parsed = messageSchema.safeParse(raw);
     if (!parsed.success) return;
     const { id, at, memberId, status } = parsed.data;
-    void this.deliver(organizationId.data, {
-      id,
-      type: 'user.status-changed.v1',
-      at,
-      version: 1,
-      data: { memberId, status },
-    }).catch(() => undefined);
+    const memberKey = `${organizationId.data}/${memberId.toLowerCase()}`;
+    const delivery = Symbol();
+    this.deliveries.set(memberKey, delivery);
+    const stillCurrent = (): boolean => this.ready && this.deliveries.get(memberKey) === delivery;
+    void this.deliver(
+      organizationId.data,
+      { id, type: 'user.status-changed.v1', at, version: 1, data: { memberId, status } },
+      stillCurrent,
+    )
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.deliveries.get(memberKey) === delivery) this.deliveries.delete(memberKey);
+      });
   };
   // #endregion
 }

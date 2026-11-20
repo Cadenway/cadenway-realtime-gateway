@@ -2,14 +2,22 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { RelayBrokerReadiness } from './relay-broker-readiness.js';
 
-function broker(available: boolean, checkCaughtUp: (signal: AbortSignal) => Promise<boolean>) {
+function broker(
+  available: boolean,
+  checkCaughtUp: (signal: AbortSignal) => Promise<boolean>,
+  checkAdvisory: (signal: AbortSignal) => Promise<boolean> = () => Promise.resolve(true),
+) {
   let update: (available: boolean) => void = () => undefined;
   const unsubscribe = vi.fn();
-  const gate = new RelayBrokerReadiness((listener) => {
-    update = listener;
-    listener(available);
-    return unsubscribe;
-  }, checkCaughtUp);
+  const gate = new RelayBrokerReadiness(
+    (listener) => {
+      update = listener;
+      listener(available);
+      return unsubscribe;
+    },
+    checkCaughtUp,
+    checkAdvisory,
+  );
   return {
     gate,
     change: (value: boolean): void => {
@@ -105,6 +113,103 @@ describe('RelayBrokerReadiness', () => {
     );
     expect(check).toHaveBeenCalledTimes(3);
     gate.beforeApplicationShutdown();
+  });
+
+  it('closes existing sockets on a retained advisory and checks backlog before reopening', async () => {
+    const caughtUp = vi.fn<() => Promise<boolean>>().mockResolvedValue(true);
+    const advisory = vi.fn<() => Promise<boolean>>().mockResolvedValue(true);
+    const { gate } = broker(true, caughtUp, advisory);
+    const close = vi.fn();
+    gate.onUnavailable(close);
+    gate.onApplicationBootstrap();
+    try {
+      await vi.waitFor(() => {
+        expect(gate.ready).toBe(true);
+      });
+      advisory.mockResolvedValue(false);
+      await vi.waitFor(
+        () => {
+          expect(gate.ready).toBe(false);
+        },
+        { timeout: 1_500 },
+      );
+      expect(close).toHaveBeenCalledOnce();
+
+      caughtUp.mockResolvedValue(false);
+      advisory.mockResolvedValue(true);
+      await vi.waitFor(() => {
+        expect(caughtUp).toHaveBeenCalledTimes(2);
+      });
+      expect(gate.ready).toBe(false);
+
+      caughtUp.mockResolvedValue(true);
+      await vi.waitFor(() => {
+        expect(gate.ready).toBe(true);
+      });
+    } finally {
+      gate.beforeApplicationShutdown();
+    }
+  });
+
+  it('closes transports if the next advisory probe has not refreshed the current proof', async () => {
+    const pending = pendingSnapshot();
+    const advisory = vi
+      .fn<() => Promise<boolean>>()
+      .mockResolvedValueOnce(true)
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(false);
+    const caughtUp = vi.fn<() => Promise<boolean>>().mockResolvedValue(true);
+    const { gate } = broker(true, caughtUp, advisory);
+    const close = vi.fn();
+    gate.onUnavailable(close);
+    gate.onApplicationBootstrap();
+    try {
+      await vi.waitFor(() => {
+        expect(gate.ready).toBe(true);
+      });
+      await vi.waitFor(
+        () => {
+          expect(advisory).toHaveBeenCalledTimes(2);
+        },
+        { timeout: 1_500 },
+      );
+      expect(caughtUp).toHaveBeenCalledOnce();
+
+      await vi.waitFor(
+        () => {
+          expect(close).toHaveBeenCalledOnce();
+        },
+        { timeout: 3_500 },
+      );
+      expect(gate.ready).toBe(false);
+
+      pending.resolve(true);
+      await pending.promise;
+      expect(gate.ready).toBe(false);
+    } finally {
+      pending.resolve(false);
+      gate.beforeApplicationShutdown();
+    }
+  });
+
+  it('does not open from an initially clear broker response received after its proof expired', async () => {
+    vi.useFakeTimers();
+    const pending = pendingSnapshot();
+    const advisory = vi.fn<() => Promise<boolean>>().mockReturnValue(pending.promise);
+    const { gate } = broker(true, () => Promise.resolve(true), advisory);
+    gate.onApplicationBootstrap();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(advisory).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(3_001);
+      pending.resolve(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(gate.ready).toBe(false);
+    } finally {
+      pending.resolve(false);
+      gate.beforeApplicationShutdown();
+      vi.useRealTimers();
+    }
   });
 
   it('aborts outstanding work and ignores stale watcher callbacks after shutdown', async () => {

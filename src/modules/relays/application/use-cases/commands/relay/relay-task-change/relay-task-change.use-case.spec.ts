@@ -146,6 +146,54 @@ describe('RelayTaskChange', () => {
     expect(connections.deliver).toHaveBeenCalledTimes(2);
   });
 
+  it('does not share an earlier authorization across different visibility fences', async () => {
+    const { relay, connections } = setup();
+    const second = { ...recipient, socketId: 'socket-b' };
+    connections.taskSubscribers.mockResolvedValue([recipient, second]);
+    connections.listSubscribers.mockResolvedValue([]);
+    let releaseOldProof!: () => void;
+    const oldProofPending = new Promise<void>((resolve) => {
+      releaseOldProof = resolve;
+    });
+    let oldProofStarted!: () => void;
+    const oldProofStartedPromise = new Promise<void>((resolve) => {
+      oldProofStarted = resolve;
+    });
+    connections.fence.mockImplementation(async (socket) => {
+      if (socket.socketId === second.socketId) {
+        await oldProofStartedPromise;
+        return '6';
+      }
+      return '5';
+    });
+    connections.authorizeTask.mockImplementation(async (socket) => {
+      if (socket.socketId === second.socketId) return null;
+      oldProofStarted();
+      await oldProofPending;
+      return { organizationId, spaceId, listId, taskId, taskKey: fact.key };
+    });
+    const pending = relay.execute(fact, new AbortController().signal);
+    await oldProofStartedPromise;
+    // Let the second fence and its authorization run while the earlier proof is pending.
+    await vi.waitFor(() => {
+      expect(connections.fence).toHaveBeenCalledTimes(2);
+    });
+    releaseOldProof();
+    await pending;
+    expect(connections.authorizeTask).toHaveBeenCalledTimes(2);
+    expect(connections.deliver).not.toHaveBeenCalledWith(
+      second,
+      expect.anything(),
+      '6',
+      expect.anything(),
+    );
+    expect(connections.evict).toHaveBeenCalledWith(
+      second,
+      { kind: 'task', taskKey: fact.key },
+      '6',
+    );
+  });
+
   it('rechecks another socket when the shared authorization result is refused', async () => {
     const { relay, connections } = setup();
     const second = { ...recipient, socketId: 'socket-b' };

@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import {
+  membershipKey,
+  organizationLeaseKey,
+  sessionKey,
+  socketIdentityFingerprint,
+  socketRegistrationKey,
+  socketRegistryPrefix,
+} from '../../../../../../infrastructure/redis/realtime-socket-authority.js';
 import type { RealtimeRoom } from '../../../../application/models/connection/realtime-room.model.js';
 import type { RealtimeSession } from '../../../../application/models/connection/realtime-session.model.js';
 import type { RoomSelection } from '../../../../application/models/connection/room-selection.model.js';
@@ -28,7 +36,6 @@ interface RedisRegistryCommands {
   // #endregion
 }
 
-const prefix = 'realtime:connection:';
 const maximumHandoffBytes = 8_192;
 const socketScriptDigest = createHash('sha1').update(socketRegistryScript).digest('hex');
 const markerScriptDigest = createHash('sha1').update(markSocketInvalidationScript).digest('hex');
@@ -36,20 +43,8 @@ const organizationLeaseDigest = createHash('sha1')
   .update(invalidateOrganizationLeasesScript)
   .digest('hex');
 
-function sessionKey(sessionId: string): string {
-  return `${prefix}session:${encodeURIComponent(sessionId.toLowerCase())}`;
-}
-
-function membershipKey(organizationId: string, memberId: string): string {
-  return `${prefix}member:${encodeURIComponent(organizationId.toLowerCase())}:${encodeURIComponent(memberId.toLowerCase())}`;
-}
-
 function visibilityKey(organizationId: string): string {
-  return `${prefix}visibility:${encodeURIComponent(organizationId.toLowerCase())}`;
-}
-
-function organizationLeaseKey(organizationId: string): string {
-  return `${prefix}organization-lease:${encodeURIComponent(organizationId.toLowerCase())}`;
+  return `${socketRegistryPrefix}visibility:${encodeURIComponent(organizationId.toLowerCase())}`;
 }
 
 function selectorOf(selection: RoomSelection): string {
@@ -75,7 +70,7 @@ function decodeRoom(value: unknown): RealtimeRoom | null {
 export class RedisSocketRegistry implements SocketRegistryPort {
   // #region Properties
   /** Private channel of the replica that creates a socket registration. */
-  public readonly deliveryChannel: string = `${prefix}delivery:${randomUUID()}`;
+  public readonly deliveryChannel: string = `${socketRegistryPrefix}delivery:${randomUUID()}`;
   // #endregion
 
   // #region Constructor
@@ -222,7 +217,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
       [
         visibilityKey(organizationId),
         organizationLeaseKey(organizationId),
-        `${prefix}organization-fact:${encodeURIComponent(organizationId.toLowerCase())}:${encodeURIComponent(factId.toLowerCase())}`,
+        `${socketRegistryPrefix}organization-fact:${encodeURIComponent(organizationId.toLowerCase())}:${encodeURIComponent(factId.toLowerCase())}`,
       ],
       [],
     );
@@ -237,19 +232,6 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     fence = '',
     delivery = '',
   ): Promise<unknown> {
-    const identity = createHash('sha256')
-      .update(
-        JSON.stringify([
-          session.sessionId,
-          session.sessionVersion,
-          session.expiresAt,
-          session.organizationId,
-          session.memberId,
-          session.userId,
-          session.role,
-        ]),
-      )
-      .digest('hex');
     // ioredis may resend a command when the connection drops before its reply.
     const requestId =
       operation === 'register' ||
@@ -262,7 +244,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
       socketRegistryScript,
       socketScriptDigest,
       [
-        `${prefix}socket:${encodeURIComponent(socketId)}`,
+        socketRegistrationKey(socketId),
         sessionKey(session.sessionId),
         membershipKey(session.organizationId, session.memberId),
         visibilityKey(session.organizationId),
@@ -270,7 +252,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
       ],
       [
         operation,
-        identity,
+        socketIdentityFingerprint(session),
         String(session.sessionVersion),
         session.role,
         String(session.expiresAt),

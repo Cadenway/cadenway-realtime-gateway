@@ -62,14 +62,14 @@ export class RelayConnectionsAdapter implements TaskRelayPort, RelayInvalidation
   }
 
   /** Removes a stale selector through the connection owner. */
-  public evict(
+  public async evict(
     recipient: RelayRecipient,
     selection:
       | { readonly kind: 'task'; readonly taskKey: string }
       | { readonly kind: 'list'; readonly listId: string },
     fence: string,
   ): Promise<void> {
-    return this.connections.evict(recipient, selection, fence);
+    await this.connections.evict(recipient, selection, fence);
   }
 
   /** Records a terminal session fence and closes its sockets. */
@@ -105,6 +105,16 @@ export class RelayConnectionsAdapter implements TaskRelayPort, RelayInvalidation
   /** Fences tenant sockets once per producer fact. */
   public disconnectOrganization(organizationId: string, factId: string): Promise<void> {
     return this.connections.disconnectOrganization(organizationId, factId);
+  }
+
+  /** Reconciles only the affected task room through the Connection capability. */
+  public invalidateTaskRoom(
+    organizationId: string,
+    taskKey: string,
+    action: 'trash' | 'purge',
+    signal: AbortSignal,
+  ): Promise<void> {
+    return this.connections.invalidateTaskRoom(organizationId, taskKey, action, signal);
   }
   // #endregion
 }

@@ -2,6 +2,7 @@ import { pubSubClientOptions, ResilientRedisClient } from '@cadenway/nest-common
 import type { OnApplicationShutdown } from '@nestjs/common';
 
 import type { RealtimeAdmissionGates } from '../../../../../../infrastructure/redis/realtime-admission-gates.js';
+import { RedisSubscriptionRecovery } from '../../../../../../infrastructure/redis/redis-subscription-recovery.js';
 
 const lostEvents = ['close', 'reconnecting', 'end'] as const;
 const maximumConcurrentHandoffs = 128;
@@ -15,14 +16,8 @@ export class RedisRelayInbox implements OnApplicationShutdown {
   /** Gate callback for Socket.IO admission and health checks. */
   private readonly untrack: () => void;
 
-  /** Each loss invalidates any in-flight subscription acknowledgement. */
-  private subscriptionEpoch = 0;
-
-  /** A subscription from the current end-to-end connection epoch was acknowledged. */
-  private subscribed = false;
-
-  /** Prevents activation during shutdown. */
-  private stopped = false;
+  /** Recovers the exact subscription after transient failures or reconnects. */
+  private readonly subscription: RedisSubscriptionRecovery;
 
   /** Bounds checks for waiting local transports under burst load. */
   private pending = 0;
@@ -32,7 +27,7 @@ export class RedisRelayInbox implements OnApplicationShutdown {
 
   /** The command connection has received a fresh subscription acknowledgement. */
   public get available(): boolean {
-    return !this.stopped && this.subscribed && this.subscriber.status === 'ready';
+    return this.subscription.ready && this.subscriber.status === 'ready';
   }
   // #endregion
 
@@ -52,6 +47,10 @@ export class RedisRelayInbox implements OnApplicationShutdown {
       autoResubscribe: false,
       maxRetriesPerRequest: 0,
     });
+    this.subscription = new RedisSubscriptionRecovery(
+      () => this.subscriber.status === 'ready',
+      async () => (await this.subscriber.subscribe(this.channel)) === 1,
+    );
     this.untrack = gates.track(
       'owner-inbox',
       () => this.available,
@@ -60,20 +59,20 @@ export class RedisRelayInbox implements OnApplicationShutdown {
     this.subscriber.on('ready', this.onReady);
     this.subscriber.on('message', this.onMessage);
     for (const event of lostEvents) this.subscriber.on(event, this.onLost);
+    this.subscription.resume();
   }
   // #endregion
 
   // #region Properties
   /** Restores the private route only after Redis accepts the subscription again. */
   private readonly onReady = (): void => {
-    void this.restore();
+    this.subscription.resume();
   };
 
   /** Invalidates old acknowledgements and tells transport owners to close existing sockets. */
   private readonly onLost = (): void => {
-    const wasSubscribed = this.subscribed;
-    this.subscriptionEpoch += 1;
-    this.subscribed = false;
+    const wasSubscribed = this.subscription.ready;
+    this.subscription.invalidate();
     if (wasSubscribed) for (const listener of this.unavailableListeners) listener();
   };
 
@@ -101,27 +100,14 @@ export class RedisRelayInbox implements OnApplicationShutdown {
 
   /** Closes the private route and detaches all listeners. */
   public async onApplicationShutdown(): Promise<void> {
-    this.stopped = true;
     this.onLost();
+    this.subscription.stop();
     this.untrack();
     this.subscriber.off('ready', this.onReady);
     this.subscriber.off('message', this.onMessage);
     for (const event of lostEvents) this.subscriber.off(event, this.onLost);
     this.unavailableListeners.clear();
     await this.subscriber.shutDown();
-  }
-
-  private async restore(): Promise<void> {
-    const epoch = ++this.subscriptionEpoch;
-    let acknowledged: unknown;
-    try {
-      acknowledged = await this.subscriber.subscribe(this.channel);
-    } catch {
-      return;
-    }
-    if (!this.stopped && this.subscriptionEpoch === epoch && this.subscriber.status === 'ready') {
-      this.subscribed = acknowledged === 1;
-    }
   }
   // #endregion
 }

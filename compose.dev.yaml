@@ -46,10 +46,24 @@ services:
     entrypoint: ['/bin/sh', '-c']
     command:
       - >-
-        nats stream info EVENTS >/dev/null 2>&1 ||
+        ( nats stream info EVENTS >/dev/null 2>&1 ||
         nats stream add EVENTS --defaults --subjects 'evt.>' --description 'Every Cadenway event.'
         --storage file --retention limits --discard old --replicas 1 --max-age 7d --max-bytes 1GiB
-        --dupe-window 2m --max-msgs=-1 --max-msgs-per-subject=-1 --max-msg-size=-1 >/dev/null
+        --dupe-window 2m --max-msgs=-1 --max-msgs-per-subject=-1 --max-msg-size=-1 >/dev/null ) &&
+        ( nats stream info REALTIME_AUTHORIZATION_ADVISORIES >/dev/null 2>&1 ||
+        ( subjects='';
+        for handler in relay-session-revoked relay-session-organization-changed relay-member-removed
+        relay-member-role-changed relay-space-updated relay-space-access-changed
+        relay-space-access-republished relay-space-deleted relay-list-access-changed
+        relay-list-deleted relay-task-trashed relay-task-purged relay-task-updated; do
+          for kind in MAX_DELIVERIES MSG_TERMINATED; do
+            subject='$$JS.EVENT.ADVISORY.CONSUMER.'"$$kind"'.EVENTS.realtime-gateway__'"$$handler";
+            subjects="$${subjects:+$$subjects,}$$subject";
+          done;
+        done;
+        nats stream add REALTIME_AUTHORIZATION_ADVISORIES --defaults --subjects "$$subjects"
+        --storage file --retention limits --discard old --replicas 1 --max-age 0
+        --max-bytes=-1 --max-msgs=1 --max-msgs-per-subject=-1 --max-msg-size=-1 >/dev/null ) )
     environment:
       NATS_URL: nats://nats:4222
       NATS_USER: admin

@@ -81,9 +81,13 @@ export class ConnectionRecipients {
     return this.registry.publish(recipient.socketId, recipient.session, fence, room, packet);
   }
 
-  /** Relays an already validated presence transition only to this replica's authorized sockets. */
-  public deliverPresence(organizationId: string, packet: unknown): Promise<void> {
-    return this.transport.deliverPresence(organizationId, packet);
+  /** Relays a still-current presence transition only to this replica's authorized sockets. */
+  public deliverPresence(
+    organizationId: string,
+    packet: unknown,
+    stillCurrent: () => boolean,
+  ): Promise<void> {
+    return this.transport.deliverPresence(organizationId, packet, stillCurrent);
   }
 
   /** Removes an obsolete subscription without resolving a hidden task or list. */
@@ -91,14 +95,15 @@ export class ConnectionRecipients {
     recipient: ConnectionRecipient,
     selection: RoomSelection,
     fence: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const room = await this.registry.evict(recipient.socketId, recipient.session, fence, selection);
-    if (room === null) return;
+    if (room === null) return false;
     const rooms =
       selection.kind === 'task'
         ? [room, `task-key:${recipient.session.organizationId}:${selection.taskKey}`]
         : [room];
     this.transport.leave(recipient, rooms);
+    return true;
   }
 
   /** Fences the session permanently, then closes sockets still registered for it. */
@@ -145,9 +150,55 @@ export class ConnectionRecipients {
     return this.registry.advanceVisibility(organizationId);
   }
 
+  /** Fences old proofs before removing only affected subscriptions across replicas. */
+  public async invalidateTaskRoom(
+    organizationId: string,
+    taskKey: string,
+    action: 'trash' | 'purge',
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    await this.advanceVisibility(organizationId);
+    signal.throwIfAborted();
+    const recipients = await this.readTask(organizationId, taskKey);
+    const selection = { kind: 'task', taskKey } as const;
+    const concurrency = 8;
+    for (let offset = 0; offset < recipients.length; offset += concurrency) {
+      signal.throwIfAborted();
+      const outcomes = await Promise.allSettled(
+        recipients
+          .slice(offset, offset + concurrency)
+          .map((recipient) => this.reconcileTaskSelection(recipient, selection, action, signal)),
+      );
+      const failed = outcomes.find((outcome) => outcome.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+    }
+    signal.throwIfAborted();
+  }
+
   /** Persists a broad invalidation checked by the watchdog of every existing tenant socket. */
   public disconnectOrganization(organizationId: string, factId: string): Promise<void> {
     return this.registry.invalidateOrganizationLeases(organizationId, factId);
+  }
+
+  private async reconcileTaskSelection(
+    recipient: ConnectionRecipient,
+    selection: Extract<RoomSelection, { kind: 'task' }>,
+    action: 'trash' | 'purge',
+    signal: AbortSignal,
+  ): Promise<void> {
+    const fence = await this.fence(recipient);
+    signal.throwIfAborted();
+    if (fence === null) return;
+    if (action === 'trash' && (await this.authorized(recipient, selection, signal)) !== null) {
+      return;
+    }
+    signal.throwIfAborted();
+    if (await this.evict(recipient, selection, fence)) return;
+    const currentFence = await this.fence(recipient);
+    if (currentFence !== null && currentFence !== fence) {
+      throw new Error('Task room invalidation overlapped with a visibility change.');
+    }
   }
 
   private async readWithin(

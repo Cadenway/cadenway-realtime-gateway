@@ -16,7 +16,7 @@ import {
   TASK_UPDATED_V1,
   eventSchemas,
 } from '@cadenway/contracts/events/realtime-gateway';
-import type { EventConsumers } from '@cadenway/nest-messaging';
+import type { EventConsumers, EventRedelivery } from '@cadenway/nest-messaging';
 import type { OnApplicationBootstrap } from '@nestjs/common';
 
 import type { TaskRelayFact } from '../../../../application/models/relay/task-relay-fact.model.js';
@@ -40,6 +40,12 @@ export const relayInvalidationHandlers = {
   taskUpdated: 'relay-task-updated',
 } as const;
 
+// Authorization markers must survive an extended Redis outage while JetStream keeps the fact.
+const invalidationRedelivery: EventRedelivery = {
+  delaysMs: [1_000, 5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000],
+  maxDeliveries: 32,
+};
+
 function taskFact(
   type: TaskRelayFact['type'],
   source: Pick<
@@ -49,7 +55,17 @@ function taskFact(
   data: TaskRelayFact['data'],
 ): TaskRelayFact {
   const { id, occurredAt, organizationId, version, key, spaceId, listId } = source;
-  return { id, occurredAt, organizationId, version, key, spaceId, listId, type, data };
+  return {
+    id: id.toLowerCase(),
+    occurredAt,
+    organizationId: organizationId.toLowerCase(),
+    version,
+    key,
+    spaceId: spaceId.toLowerCase(),
+    listId: listId.toLowerCase(),
+    type,
+    data,
+  };
 }
 
 /** Subscribes only to the versioned facts listed by the installed realtime contract. */
@@ -68,12 +84,17 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
   public async onApplicationBootstrap(): Promise<void> {
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.sessionRevoked,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SESSION_REVOKED_V1,
       handle: async (fact, { signal }) => {
         signal.throwIfAborted();
         await this.invalidation.execute(
-          { kind: 'session-revoked', sessionId: fact.sessionId, version: fact.version },
+          {
+            kind: 'session-revoked',
+            sessionId: fact.sessionId.toLowerCase(),
+            version: fact.version,
+          },
           signal,
         );
         signal.throwIfAborted();
@@ -81,12 +102,17 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.sessionOrganizationChanged,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SESSION_ORGANIZATION_CHANGED_V1,
       handle: async (fact, { signal }) => {
         signal.throwIfAborted();
         await this.invalidation.execute(
-          { kind: 'session-switched', sessionId: fact.sessionId, version: fact.version },
+          {
+            kind: 'session-switched',
+            sessionId: fact.sessionId.toLowerCase(),
+            version: fact.version,
+          },
           signal,
         );
         signal.throwIfAborted();
@@ -94,6 +120,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.memberRemoved,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: MEMBER_REMOVED_V1,
       handle: async (fact, { signal }) => {
@@ -101,8 +128,8 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
         await this.invalidation.execute(
           {
             kind: 'member-removed',
-            organizationId: fact.organizationId,
-            memberId: fact.memberId,
+            organizationId: fact.organizationId.toLowerCase(),
+            memberId: fact.memberId.toLowerCase(),
             version: fact.version,
           },
           signal,
@@ -112,6 +139,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.memberRoleChanged,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: MEMBER_ROLE_CHANGED_V1,
       handle: async (fact, { signal }) => {
@@ -119,8 +147,8 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
         await this.invalidation.execute(
           {
             kind: 'member-role',
-            organizationId: fact.organizationId,
-            memberId: fact.memberId,
+            organizationId: fact.organizationId.toLowerCase(),
+            memberId: fact.memberId.toLowerCase(),
             version: fact.version,
             role: fact.role,
           },
@@ -131,6 +159,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.spaceUpdated,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SPACE_UPDATED_V1,
       handle: (fact, { signal }) =>
@@ -140,6 +169,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.spaceAccessChanged,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SPACE_ACCESS_CHANGED_V1,
       handle: (fact, { signal }) =>
@@ -147,6 +177,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.spaceAccessRepublished,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SPACE_ACCESS_REPUBLISHED_V1,
       handle: (fact, { signal }) =>
@@ -154,6 +185,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.spaceDeleted,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SPACE_DELETED_V1,
       handle: (fact, { signal }) =>
@@ -161,6 +193,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.listAccessChanged,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: LIST_ACCESS_CHANGED_V1,
       handle: (fact, { signal }) =>
@@ -168,6 +201,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.listDeleted,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: LIST_DELETED_V1,
       handle: (fact, { signal }) =>
@@ -175,27 +209,46 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.taskTrashed,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: TASK_TRASHED_V1,
       handle: (fact, { signal }) =>
-        this.invalidateOrganization(fact.organizationId, fact.id, signal),
+        this.invalidation.execute(
+          {
+            kind: 'task-room',
+            organizationId: fact.organizationId.toLowerCase(),
+            taskKey: fact.key,
+            action: 'trash',
+          },
+          signal,
+        ),
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.taskPurged,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: TASK_PURGED_V1,
       handle: (fact, { signal }) =>
-        this.invalidateOrganization(fact.organizationId, fact.id, signal),
+        this.invalidation.execute(
+          {
+            kind: 'task-room',
+            organizationId: fact.organizationId.toLowerCase(),
+            taskKey: fact.key,
+            action: 'purge',
+          },
+          signal,
+        ),
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.taskUpdated,
+      redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: TASK_UPDATED_V1,
       handle: async (fact, { signal }) => {
         signal.throwIfAborted();
         if (fact.changed.some((field) => ['listId', 'spaceId', 'parentKey'].includes(field))) {
           await this.invalidation.execute(
-            { kind: 'visibility', organizationId: fact.organizationId },
+            { kind: 'visibility', organizationId: fact.organizationId.toLowerCase() },
             signal,
           );
         }
@@ -221,7 +274,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       event: COMMENT_CREATED_V1,
       handle: (fact, { signal }) =>
         this.changes.execute(
-          taskFact(COMMENT_CREATED_V1, fact, { commentId: fact.commentId }),
+          taskFact(COMMENT_CREATED_V1, fact, { commentId: fact.commentId.toLowerCase() }),
           signal,
         ),
     });
@@ -232,7 +285,14 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     factId: string,
     signal: AbortSignal,
   ): Promise<void> {
-    await this.invalidation.execute({ kind: 'organization', organizationId, factId }, signal);
+    await this.invalidation.execute(
+      {
+        kind: 'organization',
+        organizationId: organizationId.toLowerCase(),
+        factId: factId.toLowerCase(),
+      },
+      signal,
+    );
   }
   // #endregion
 }

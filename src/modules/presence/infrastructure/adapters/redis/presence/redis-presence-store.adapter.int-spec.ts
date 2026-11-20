@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { RedisSocketRegistry } from '../../../../../connection/infrastructure/adapters/redis/connection/redis-socket-registry.adapter.js';
 import type { PresenceConnection } from '../../../../application/models/presence/presence.model.js';
 import { RedisPresenceStore } from './redis-presence-store.adapter.js';
 import { RedisPresenceSubscription } from './redis-presence-subscription.adapter.js';
@@ -14,11 +16,26 @@ const organizationId = '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f15';
 const otherOrganization = '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f16';
 const memberId = '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f17';
 
+function socket(overrides: Partial<PresenceConnection> = {}): PresenceConnection {
+  return {
+    organizationId,
+    memberId: randomUUID(),
+    socketId: randomUUID(),
+    sessionId: randomUUID(),
+    sessionVersion: 1,
+    expiresAt: Date.now() + 60_000,
+    userId: randomUUID(),
+    role: 'member',
+    ...overrides,
+  };
+}
+
 describe('Redis presence leases', () => {
   let container: StartedRedisContainer;
   let redis: Redis;
   let listener: Redis;
   let store: RedisPresenceStore;
+  let registry: RedisSocketRegistry;
   const messages: { channel: string; payload: string }[] = [];
 
   beforeAll(async () => {
@@ -26,6 +43,7 @@ describe('Redis presence leases', () => {
     redis = new Redis(container.getConnectionUrl());
     listener = new Redis(container.getConnectionUrl());
     store = new RedisPresenceStore(redis);
+    registry = new RedisSocketRegistry(redis);
     listener.on('message', (channel, payload) => messages.push({ channel, payload }));
     await listener.subscribe(`realtime:presence:org:${organizationId}`);
     await listener.subscribe(`realtime:presence:org:${otherOrganization}`);
@@ -55,12 +73,8 @@ describe('Redis presence leases', () => {
         expect(first.ready).toBe(true);
         expect(second.ready).toBe(true);
       });
-      const connection: PresenceConnection = {
-        organizationId,
-        memberId: '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f20',
-        socketId: 'replicated',
-        sessionExpiresAt: Date.now() + 60_000,
-      };
+      const connection = socket();
+      expect(await registry.register(connection.socketId, connection)).toBe(true);
       expect(await store.connect(connection)).toBe(true);
       await vi.waitFor(() => {
         expect(deliveries).toHaveLength(2);
@@ -83,14 +97,17 @@ describe('Redis presence leases', () => {
   });
 
   it('isolates organizations and aggregates sockets without revealing invisible status', async () => {
-    const first: PresenceConnection = {
-      organizationId,
-      memberId,
-      socketId: 'socket-a',
-      sessionExpiresAt: Date.now() + 60_000,
+    const first = socket({ memberId });
+    const second = { ...first, socketId: randomUUID() };
+    const other = {
+      ...first,
+      socketId: randomUUID(),
+      sessionId: randomUUID(),
+      organizationId: otherOrganization,
     };
-    const second: PresenceConnection = { ...first, socketId: 'socket-b' };
-    const other: PresenceConnection = { ...first, organizationId: otherOrganization };
+    for (const connection of [first, second, other]) {
+      expect(await registry.register(connection.socketId, connection)).toBe(true);
+    }
     expect(await store.connect(first)).toBe(true);
     expect(await store.connect(second)).toBe(true);
     expect(await store.connect(other)).toBe(true);
@@ -115,12 +132,8 @@ describe('Redis presence leases', () => {
   });
 
   it('expires a session without allowing a heartbeat to revive it', async () => {
-    const connection: PresenceConnection = {
-      organizationId,
-      memberId: '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f18',
-      socketId: 'short-lived',
-      sessionExpiresAt: Date.now() + 250,
-    };
+    const connection = socket({ expiresAt: Date.now() + 250 });
+    expect(await registry.register(connection.socketId, connection)).toBe(true);
     expect(await store.connect(connection)).toBe(true);
     await delay(300);
     expect(await store.heartbeat(connection)).toBe(false);
@@ -135,12 +148,8 @@ describe('Redis presence leases', () => {
   });
 
   it('emits offline from a scheduled sweep when a client stops sending heartbeats', async () => {
-    const connection: PresenceConnection = {
-      organizationId,
-      memberId: '019a7004-3b2c-7d4e-8f5a-6b7c8d9e0f19',
-      socketId: 'expired',
-      sessionExpiresAt: Date.now() + 250,
-    };
+    const connection = socket({ expiresAt: Date.now() + 250 });
+    expect(await registry.register(connection.socketId, connection)).toBe(true);
     expect(await store.connect(connection)).toBe(true);
     await delay(300);
     expect(await store.expire(500)).toBeGreaterThanOrEqual(1);
@@ -152,4 +161,60 @@ describe('Redis presence leases', () => {
       events.filter((event) => event.memberId === connection.memberId).map((event) => event.status),
     ).toEqual(['online', 'offline']);
   });
+
+  it('binds presence to the exact verified socket identity', async () => {
+    const connection = socket();
+    expect(await store.connect(connection)).toBe(false);
+    expect(await registry.register(connection.socketId, connection)).toBe(true);
+    expect(await store.connect({ ...connection, userId: randomUUID() })).toBe(false);
+    expect(await store.connect(connection)).toBe(true);
+    await store.disconnect(connection);
+  });
+
+  const invalidations = {
+    'session revocation': (connection: PresenceConnection) =>
+      registry.markSessionRevoked(connection.sessionId, 2),
+    'membership role change and revert': async (connection: PresenceConnection) => {
+      await registry.markMembershipRole(connection.organizationId, connection.memberId, 2, 'admin');
+      await registry.markMembershipRole(
+        connection.organizationId,
+        connection.memberId,
+        3,
+        'member',
+      );
+    },
+    'tenant lease invalidation': (connection: PresenceConnection) =>
+      registry.invalidateOrganizationLeases(connection.organizationId, randomUUID()),
+  };
+
+  it.each(Object.entries(invalidations))(
+    'keeps revoked sockets from changing or publishing presence after %s',
+    async (_name, invalidate) => {
+      const active = socket();
+      const pending = { ...active, socketId: randomUUID() };
+      const fresh = { ...active, socketId: randomUUID(), sessionId: randomUUID() };
+      expect(await registry.register(active.socketId, active)).toBe(true);
+      expect(await registry.register(pending.socketId, pending)).toBe(true);
+      expect(await store.connect(active)).toBe(true);
+      expect(await store.set(active, 'away')).toBe(true);
+      expect(await registry.readFence(active.socketId, active)).not.toBeNull();
+      await invalidate(active);
+
+      expect(await store.set(active, 'do-not-disturb')).toBe(false);
+      expect(await store.heartbeat(active)).toBe(false);
+      expect(await store.connect(pending)).toBe(false);
+      await store.disconnect(active);
+      expect(await registry.register(fresh.socketId, fresh)).toBe(true);
+      expect(await store.connect(fresh)).toBe(true);
+
+      await vi.waitFor(() => {
+        const statuses = messages
+          .map((message) => JSON.parse(message.payload) as { memberId: string; status: string })
+          .filter((event) => event.memberId === active.memberId)
+          .map((event) => event.status);
+        expect(statuses).toEqual(['online', 'away', 'offline', 'away']);
+      });
+      await store.disconnect(fresh);
+    },
+  );
 });

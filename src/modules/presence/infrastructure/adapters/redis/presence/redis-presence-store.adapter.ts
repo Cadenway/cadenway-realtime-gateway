@@ -2,6 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
 
+import {
+  membershipKey,
+  organizationLeaseKey,
+  sessionKey,
+  socketAuthorityLua,
+  socketIdentityFingerprint,
+  socketRegistrationKey,
+} from '../../../../../../infrastructure/redis/realtime-socket-authority.js';
 import type { PresenceConnection } from '../../../../application/models/presence/presence.model.js';
 import type { PresenceStatus } from '../../../../application/models/presence/presence-status.model.js';
 import type { PresenceStore } from '../../../../application/ports/outbound/redis/presence/presence-store.port.js';
@@ -11,21 +19,44 @@ const leaseMs = 90_000;
 const retentionMs = 86_400_000;
 const identifier = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
+type PresenceUpdate =
+  | {
+      readonly action: 'connect' | 'heartbeat';
+      readonly connection: PresenceConnection;
+    }
+  | {
+      readonly action: 'set';
+      readonly connection: PresenceConnection;
+      readonly status: PresenceStatus;
+    }
+  | {
+      readonly action: 'disconnect' | 'expire';
+      readonly connection: Pick<PresenceConnection, 'organizationId' | 'memberId' | 'socketId'>;
+    };
+
 // Redis serializes the lease update, visible transition and publication across instances.
 const updateScript = `
+${socketAuthorityLua}
 local time = redis.call('TIME')
 local now = time[1] * 1000 + math.floor(time[2] / 1000)
 local action, socket, deadline, status = ARGV[1], ARGV[2], tonumber(ARGV[3]), ARGV[4]
 local member, channel, lease, retention = ARGV[5], ARGV[6], tonumber(ARGV[7]), tonumber(ARGV[8])
+if action == 'connect' or action == 'heartbeat' or action == 'set' then
+  local membership, organizationLeaseVersion =
+    readSocketAuthority(KEYS[5], KEYS[6], KEYS[7], tonumber(ARGV[13]), ARGV[14], deadline, now)
+  if not membership or not currentSocketRegistration(
+    KEYS[4], ARGV[12], membership[1] or '0', organizationLeaseVersion
+  ) then return 0 end
+end
+
 local previous = redis.call('HGET', KEYS[2], 'visible') or 'offline'
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 local active = redis.call('ZSCORE', KEYS[1], socket)
 local accepted = 1
 if action == 'connect' then
-  if deadline <= now then accepted = 0
-  else redis.call('ZADD', KEYS[1], math.min(now + lease, deadline), socket) end
+  redis.call('ZADD', KEYS[1], math.min(now + lease, deadline), socket)
 elseif action == 'heartbeat' or action == 'set' then
-  if not active or deadline <= now then accepted = 0
+  if not active then accepted = 0
   else
     redis.call('ZADD', KEYS[1], math.min(now + lease, deadline), socket)
     if action == 'set' then redis.call('HSET', KEYS[2], 'preference', status) end
@@ -63,22 +94,22 @@ export class RedisPresenceStore implements PresenceStore {
   // #region Methods
   /** Creates an expiring lease for an authorized connection. */
   public connect(connection: PresenceConnection): Promise<boolean> {
-    return this.update('connect', connection);
+    return this.update({ action: 'connect', connection });
   }
 
   /** Refreshes an existing live lease. */
   public heartbeat(connection: PresenceConnection): Promise<boolean> {
-    return this.update('heartbeat', connection);
+    return this.update({ action: 'heartbeat', connection });
   }
 
   /** Sets the shared preference from a live connection. */
   public set(connection: PresenceConnection, status: PresenceStatus): Promise<boolean> {
-    return this.update('set', connection, status);
+    return this.update({ action: 'set', connection, status });
   }
 
   /** Releases only this socket's lease. */
   public async disconnect(connection: PresenceConnection): Promise<void> {
-    await this.update('disconnect', connection);
+    await this.update({ action: 'disconnect', connection });
   }
 
   /** Atomically reconciles each member whose earliest socket lease has expired. */
@@ -92,39 +123,50 @@ export class RedisPresenceStore implements PresenceStore {
       const [organizationId, memberId] = item.split('/');
       if (organizationId === undefined || memberId === undefined)
         throw new Error('Invalid presence index');
-      await this.update('expire', { organizationId, memberId, socketId: '', sessionExpiresAt: 0 });
+      await this.update({
+        action: 'expire',
+        connection: { organizationId, memberId, socketId: '' },
+      });
     }
     return due.length;
   }
 
-  /** Runs one transition and publishes only on the authenticated organization's channel. */
-  private async update(
-    action: 'connect' | 'heartbeat' | 'set' | 'disconnect' | 'expire',
-    connection: PresenceConnection,
-    status: PresenceStatus = 'online',
-  ): Promise<boolean> {
+  /** Validates socket authority and publishes any resulting transition in the same script. */
+  private async update(update: PresenceUpdate): Promise<boolean> {
+    const { action, connection } = update;
     const organizationId = connection.organizationId.toLowerCase();
     const memberId = connection.memberId.toLowerCase();
     if (!identifier.test(organizationId) || !identifier.test(memberId))
       throw new Error('Invalid presence scope');
-    if (
-      action !== 'expire' &&
-      (!connection.socketId || !Number.isSafeInteger(connection.sessionExpiresAt))
-    ) {
-      throw new Error('Invalid presence connection');
+    if (action !== 'expire' && !connection.socketId) throw new Error('Invalid presence connection');
+
+    const authority =
+      update.action === 'connect' || update.action === 'heartbeat' || update.action === 'set'
+        ? update.connection
+        : undefined;
+    if (authority !== undefined && !Number.isSafeInteger(authority.expiresAt)) {
+      throw new Error('Invalid presence connection deadline');
     }
     const member = `${organizationId}/${memberId}`;
     const base = `realtime:presence:${organizationId}:${memberId}`;
     const result = await this.redis.eval(
       updateScript,
-      3,
+      authority === undefined ? 3 : 7,
       `${base}:sockets`,
       `${base}:state`,
       dueKey,
+      ...(authority === undefined
+        ? []
+        : [
+            socketRegistrationKey(connection.socketId),
+            sessionKey(authority.sessionId),
+            membershipKey(organizationId, memberId),
+            organizationLeaseKey(organizationId),
+          ]),
       action,
       connection.socketId,
-      connection.sessionExpiresAt,
-      status,
+      authority?.expiresAt ?? 0,
+      update.action === 'set' ? update.status : 'online',
       member,
       `realtime:presence:org:${organizationId}`,
       leaseMs,
@@ -132,6 +174,9 @@ export class RedisPresenceStore implements PresenceStore {
       memberId,
       randomUUID(),
       new Date().toISOString(),
+      ...(authority === undefined
+        ? []
+        : [socketIdentityFingerprint(authority), authority.sessionVersion, authority.role]),
     );
     return result === 1;
   }

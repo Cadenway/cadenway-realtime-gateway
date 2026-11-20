@@ -8,12 +8,7 @@ import { TrackSocketPresence } from '../../../../application/use-cases/commands/
 import type { RealtimeSession } from '../../../../application/models/connection/realtime-session.model.js';
 
 function lease(socketId: string, session: RealtimeSession): PresenceConnection {
-  return {
-    socketId,
-    organizationId: session.organizationId,
-    memberId: session.memberId,
-    sessionExpiresAt: session.expiresAt,
-  };
+  return { ...session, socketId };
 }
 
 /** Keeps the Presence capability at the Connection composition boundary. */

@@ -13,6 +13,9 @@ import {
   relayInvalidationHandlers,
 } from './presentation/messaging/handlers/relay/relay-events.handler.js';
 
+const advisoryStream = 'REALTIME_AUTHORIZATION_ADVISORIES';
+const eventStream = 'EVENTS';
+
 /** Wires validated broker facts to current authorization and targeted socket delivery. */
 @Module({
   imports: [RedisModule],
@@ -53,9 +56,17 @@ import {
         admission: RealtimeAdmissionGates,
       ): RelayBrokerReadiness => {
         const handlerNames = Object.values(relayInvalidationHandlers);
+        const durableNames = handlerNames.map((name) => `realtime-gateway__${name}`);
         const readiness = new RelayBrokerReadiness(
           (listener) => connection.watchAvailability(listener),
           (signal) => consumers.areCaughtUp(handlerNames, signal),
+          (signal) =>
+            connection.isConsumerAdvisoryStreamClear(
+              advisoryStream,
+              eventStream,
+              durableNames,
+              signal,
+            ),
         );
         admission.track(
           'broker-relays',

@@ -31,15 +31,20 @@ individual versioned durables in the published realtime contract.
 - Each candidate socket is scoped to the producer organization and checked against a live session,
   a current Task visibility proof, matching task placement and an unchanged Redis fence.
 - Task updates reach task and list subscribers once per socket. Comments reach task subscribers.
-- A permission or lifecycle change advances the tenant fence before conservatively closing its
-  affected organization's sockets. A new connection obtains a fresh Identity ticket.
+- Space and list visibility changes advance the tenant fence before closing affected organization
+  sockets. A new connection obtains a fresh Identity ticket.
+- Task trash and purge advance the tenant visibility fence and reconcile only the affected task
+  subscriptions. A delayed trash fact keeps restored task subscriptions with current Task proof.
 - A delayed fact whose task has moved is omitted without removing a still-authorized subscription.
 - An unavailable visibility check fails the delivery for broker retry; no producer payload or
   hidden task content enters a broad organization room.
 - The socket admission gate closes on broker or consumer unavailability. It reopens after the
-  current broker connection confirms that the authorization invalidation durables have caught up.
-- Each relay processes at most eight recipient checks concurrently. Within each batch, sockets of
-  the same account and role share a successful Task proof while retaining individual Redis fences.
+  current broker connection confirms that the authorization invalidation durables have caught up
+  and the persistent advisory stream is empty. Each replica checks the stream continuously and
+  closes existing transports if the stream is unavailable, has a terminal advisory, or the last
+  successful probe is stale. The advisory remains until an operator reconciles the authorities.
+- Each relay processes at most eight recipient checks concurrently. Within each delivery batch,
+  sockets of the same account, role and visibility fence share a successful Task proof.
 
 ## Transactions
 

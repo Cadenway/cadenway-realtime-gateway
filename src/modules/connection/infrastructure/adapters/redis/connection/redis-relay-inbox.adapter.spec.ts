@@ -1,5 +1,5 @@
 import type { ResilientRedisClient } from '@cadenway/nest-common/redis';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RealtimeAdmissionGates } from '../../../../../../infrastructure/redis/realtime-admission-gates.js';
 import { RedisRelayInbox } from './redis-relay-inbox.adapter.js';
@@ -55,6 +55,11 @@ function deferredAcknowledgement(): {
 }
 
 describe('owner relay inbox readiness', () => {
+  beforeEach(() => {
+    adapter.subscribe.mockReset();
+    adapter.shutdown.mockClear();
+  });
+
   it('accepts only the current exact subscription and closes readiness synchronously on loss', async () => {
     const first = deferredAcknowledgement();
     const last = deferredAcknowledgement();
@@ -79,8 +84,9 @@ describe('owner relay inbox readiness', () => {
       expect(inbox.available).toBe(false);
 
       last.resolve(1);
-      await Promise.resolve();
-      expect(inbox.available).toBe(true);
+      await vi.waitFor(() => {
+        expect(inbox.available).toBe(true);
+      });
       emit('message', 'another-channel', '{}');
       emit('message', 'private-test-channel', '{}');
       expect(receive).toHaveBeenCalledExactlyOnceWith('{}');
@@ -94,5 +100,46 @@ describe('owner relay inbox readiness', () => {
       await inbox.onApplicationShutdown();
     }
     expect(adapter.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it('retries a rejected subscription without waiting for another ready event', async () => {
+    adapter.subscribe.mockRejectedValueOnce(new Error('Temporary subscription failure.'));
+    adapter.subscribe.mockResolvedValue(1);
+    vi.useFakeTimers();
+    const inbox = new RedisRelayInbox(
+      { options: {} } as unknown as ResilientRedisClient,
+      'private-test-channel',
+      vi.fn(),
+      new RealtimeAdmissionGates(),
+    );
+    try {
+      expect(inbox.available).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(inbox.available).toBe(true);
+      expect(adapter.subscribe).toHaveBeenCalledTimes(2);
+    } finally {
+      await inbox.onApplicationShutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the scheduled subscription retry when it shuts down', async () => {
+    adapter.subscribe.mockRejectedValue(new Error('Temporary subscription failure.'));
+    vi.useFakeTimers();
+    const inbox = new RedisRelayInbox(
+      { options: {} } as unknown as ResilientRedisClient,
+      'private-test-channel',
+      vi.fn(),
+      new RealtimeAdmissionGates(),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await inbox.onApplicationShutdown();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(adapter.subscribe).toHaveBeenCalledOnce();
+      expect(inbox.available).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

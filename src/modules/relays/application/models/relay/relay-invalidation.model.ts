@@ -19,4 +19,10 @@ export type RelayInvalidation =
       readonly role: 'owner' | 'admin' | 'member' | 'guest';
     }
   | { readonly kind: 'organization'; readonly organizationId: string; readonly factId: string }
+  | {
+      readonly kind: 'task-room';
+      readonly organizationId: string;
+      readonly taskKey: string;
+      readonly action: 'trash' | 'purge';
+    }
   | { readonly kind: 'visibility'; readonly organizationId: string };

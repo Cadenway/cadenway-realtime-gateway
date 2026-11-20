@@ -1,8 +1,10 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 const retryDelayMs = 250;
+const advisoryPollMs = 1_000;
+const advisoryProofLifetimeMs = 3_000;
 
-/** Admits sockets after the current broker connection has caught up on relay deliveries. */
+/** Admits sockets while the relay broker has caught up and its failure stream is clear. */
 export class RelayBrokerReadiness {
   // #region Properties
   /** Local close callbacks for Socket.IO servers. */
@@ -17,6 +19,12 @@ export class RelayBrokerReadiness {
   /** Whether the current availability cycle has caught up. */
   private caughtUp = false;
 
+  /** Monotone freshness bound for the last successful advisory read. */
+  private clearUntil = 0;
+
+  /** Closes transports even when a fresh broker read is still pending. */
+  private freshnessTimer: ReturnType<typeof setTimeout> | undefined;
+
   /** The watcher starts once and cannot resume after application shutdown. */
   private lifecycle: 'initial' | 'watching' | 'stopped' = 'initial';
 
@@ -25,7 +33,7 @@ export class RelayBrokerReadiness {
 
   /** Whether the current broker cycle permits admission. */
   public get ready(): boolean {
-    return this.caughtUp;
+    return this.caughtUp && performance.now() < this.clearUntil;
   }
   // #endregion
 
@@ -34,6 +42,7 @@ export class RelayBrokerReadiness {
   public constructor(
     private readonly watchAvailability: (listener: (available: boolean) => void) => () => void,
     private readonly checkCaughtUp: (signal: AbortSignal) => Promise<boolean>,
+    private readonly checkAdvisoryStream: (signal: AbortSignal) => Promise<boolean>,
   ) {}
   // #endregion
 
@@ -56,7 +65,7 @@ export class RelayBrokerReadiness {
         this.closeCycle();
       } else if (this.cycle === undefined) {
         this.cycle = new AbortController();
-        if (!this.checking) void this.awaitCatchUp();
+        if (!this.checking) void this.pollBroker();
       }
     });
   }
@@ -74,9 +83,18 @@ export class RelayBrokerReadiness {
   private closeCycle(): void {
     const cycle = this.cycle;
     this.cycle = undefined;
-    this.caughtUp = false;
     if (cycle === undefined) return;
     cycle.abort();
+    this.closeAdmission(true);
+  }
+
+  private closeAdmission(forceNotify = false): void {
+    const wasOpen = this.caughtUp;
+    this.caughtUp = false;
+    this.clearUntil = 0;
+    clearTimeout(this.freshnessTimer);
+    this.freshnessTimer = undefined;
+    if (!wasOpen && !forceNotify) return;
     for (const listener of this.unavailableListeners) {
       try {
         listener();
@@ -86,24 +104,45 @@ export class RelayBrokerReadiness {
     }
   }
 
-  /** Serializes checks and delays retries without keeping the process alive. */
-  private async awaitCatchUp(): Promise<void> {
+  private openAdmission(clearUntil: number): void {
+    this.caughtUp = true;
+    this.clearUntil = clearUntil;
+    clearTimeout(this.freshnessTimer);
+    this.freshnessTimer = setTimeout(
+      () => {
+        this.closeAdmission();
+      },
+      Math.max(0, clearUntil - performance.now()),
+    );
+    this.freshnessTimer.unref();
+  }
+
+  /** Serializes probes and checks the durable error stream throughout the broker cycle. */
+  private async pollBroker(): Promise<void> {
     this.checking = true;
     try {
       while (this.cycle !== undefined) {
         const { signal } = this.cycle;
-        let caughtUp: boolean;
+        const wasOpen = this.ready;
+        let clearUntil = 0;
         try {
-          caughtUp = await this.checkCaughtUp(signal);
+          const current = wasOpen || (await this.checkCaughtUp(signal));
+          if (current && !signal.aborted) {
+            const proofDeadline = performance.now() + advisoryProofLifetimeMs;
+            if (await this.checkAdvisoryStream(signal)) clearUntil = proofDeadline;
+          }
         } catch {
-          caughtUp = false;
+          clearUntil = 0;
         }
         if (signal.aborted) continue;
-        if (caughtUp) {
-          this.caughtUp = true;
-          return;
+        const receivedAt = performance.now();
+        if (clearUntil > receivedAt && (!wasOpen || this.clearUntil > receivedAt)) {
+          this.openAdmission(clearUntil);
+        } else {
+          this.closeAdmission();
         }
-        await delay(retryDelayMs, undefined, { ref: false, signal }).catch(() => undefined);
+        const interval = this.ready ? advisoryPollMs : retryDelayMs;
+        await delay(interval, undefined, { ref: false, signal }).catch(() => undefined);
       }
     } finally {
       this.checking = false;

@@ -16,6 +16,14 @@ import {
 import type { INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import {
+  DiscardPolicy,
+  RetentionPolicy,
+  StorageType,
+  jetstream,
+  jetstreamManager,
+} from '@nats-io/jetstream';
+import { connect as connectNats, type NatsConnection } from '@nats-io/transport-node';
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
 import { Redis } from 'ioredis';
 import { io, type Socket } from 'socket.io-client';
@@ -27,6 +35,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { appConfigSchema, type AppConfig } from '../src/config/app-config.js';
 import { createRealtimeApplication } from '../src/realtime-application.js';
 import { ConnectionRecipients } from '../src/modules/connection/public/connection/connection-recipients.js';
+import { relayInvalidationHandlers } from '../src/modules/relays/presentation/messaging/handlers/relay/relay-events.handler.js';
 import {
   RealtimeUpstreams,
   listId,
@@ -230,6 +239,29 @@ async function createStreams(servers: string, adminPassword: string): Promise<vo
     { logger: false },
   );
   await context.close();
+  const nc = await connectNats({ servers, user: 'admin', pass: adminPassword });
+  try {
+    const manager = await jetstreamManager(nc);
+    const subjects = Object.values(relayInvalidationHandlers).flatMap((handler) =>
+      ['MAX_DELIVERIES', 'MSG_TERMINATED'].map(
+        (kind) => `$JS.EVENT.ADVISORY.CONSUMER.${kind}.EVENTS.realtime-gateway__${handler}`,
+      ),
+    );
+    await manager.streams.add({
+      name: 'REALTIME_AUTHORIZATION_ADVISORIES',
+      subjects,
+      storage: StorageType.File,
+      retention: RetentionPolicy.Limits,
+      discard: DiscardPolicy.Old,
+      max_msgs: 1,
+      max_age: 0,
+      max_bytes: -1,
+      max_msg_size: -1,
+      max_msgs_per_subject: -1,
+    });
+  } finally {
+    await nc.close();
+  }
 }
 
 /**
@@ -760,6 +792,8 @@ describe('realtime relay across two instances', () => {
   let nats: StartedTestContainer;
   let upstream: RealtimeUpstreams;
   let publisherContext: INestApplicationContext;
+  let admin: NatsConnection;
+  let config: AppConfig;
   let first: { app: NestExpressApplication; url: string };
   let second: { app: NestExpressApplication; url: string };
   const sockets: Socket[] = [];
@@ -833,7 +867,9 @@ describe('realtime relay across two instances', () => {
     env.IDENTITY_SERVICE_URL = upstream.url;
     env.TASK_SERVICE_URL = upstream.url;
     for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
-    const config = loadConfig(appConfigSchema);
+    config = loadConfig(appConfigSchema);
+    admin = await connectNats({ servers: natsUrl, user: 'admin', pass: adminPassword });
+    cleanup.push(() => admin.close());
     publisherContext = await NestFactory.createApplicationContext(
       MessagingModule.forRoot({
         service: 'realtime-test-publisher',
@@ -1103,4 +1139,49 @@ describe('realtime relay across two instances', () => {
       ),
     ).toBe(true);
   }, 20_000);
+
+  it('closes both instances on a retained native terminal advisory and refuses after restart', async () => {
+    const firstId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b37';
+    const secondId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b38';
+    upstream.issue('g'.repeat(43), session(firstId, organizationId), true);
+    upstream.issue('h'.repeat(43), session(secondId, organizationId), true);
+    const [firstSocket, secondSocket] = await Promise.all([
+      connect(first.url, 'g'.repeat(43)),
+      connect(second.url, 'h'.repeat(43)),
+    ]);
+    const firstClosed = new Promise<void>((resolve) =>
+      firstSocket.once('disconnect', () => {
+        resolve();
+      }),
+    );
+    const secondClosed = new Promise<void>((resolve) =>
+      secondSocket.once('disconnect', () => {
+        resolve();
+      }),
+    );
+    // An invalid event makes the real kit consumer terminate its delivery; NATS generates the advisory.
+    await jetstream(admin).publish('evt.session.revoked.v1', new TextEncoder().encode('{'));
+    const manager = await jetstreamManager(admin);
+    const stream = 'REALTIME_AUTHORIZATION_ADVISORIES';
+    expect(await waitFor(async () => (await manager.streams.info(stream)).state.messages, 1)).toBe(
+      1,
+    );
+    const terminal = await manager.streams.getMessage(stream, { seq: 1 });
+    expect(terminal?.subject).toBe(
+      '$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.EVENTS.realtime-gateway__relay-session-revoked',
+    );
+    await Promise.race([
+      Promise.all([firstClosed, secondClosed]),
+      delay(10_000).then(() => {
+        throw new Error('Both instances did not close their sockets after the terminal advisory.');
+      }),
+    ]);
+    expect(firstSocket.connected).toBe(false);
+    expect(secondSocket.connected).toBe(false);
+    await first.app.close();
+    first = await startApplication(config, []);
+    upstream.issue('i'.repeat(43), session(firstId, organizationId), true);
+    await expect(connect(first.url, 'i'.repeat(43))).rejects.toThrow();
+    expect((await manager.streams.info(stream)).state.messages).toBe(1);
+  }, 30_000);
 });

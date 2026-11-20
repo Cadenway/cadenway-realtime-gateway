@@ -8,6 +8,7 @@ import type { Redis } from 'ioredis';
 import type { Server, ServerOptions, Socket } from 'socket.io';
 
 import type { RealtimeAdmissionGates } from './realtime-admission-gates.js';
+import { RedisSubscriptionRecovery } from './redis-subscription-recovery.js';
 
 const refusedOrigin = 'Origin not allowed';
 const unavailable = 'Realtime unavailable';
@@ -144,11 +145,8 @@ class SocketIoRedisFanOut {
   /** Exact pattern subscriptions requested by the same adapter. */
   private readonly patterns = new Set<string>();
 
-  /** Invalidates a pending acknowledgement when the subscriptions or their connection change. */
-  private subscriptionEpoch = 0;
-
-  /** Whether Redis acknowledged all current subscriptions in the current epoch. */
-  private subscribed = false;
+  /** Recovers acknowledgements for the active subscription set. */
+  private readonly subscriptions: RedisSubscriptionRecovery;
 
   /** Whether shutdown has begun. */
   private closed = false;
@@ -167,7 +165,7 @@ class SocketIoRedisFanOut {
 
   /** Subscription restoration listener. */
   private readonly onSubscriberReady = (): void => {
-    void this.restoreSubscriptions();
+    this.subscriptions.resume();
   };
 
   /** Invalidates every local transport when the command or publication connection is lost. */
@@ -177,8 +175,7 @@ class SocketIoRedisFanOut {
 
   /** Invalidate old ACKs as well as local transports when the subscriber loses its connection. */
   private readonly onSubscriberLost = (): void => {
-    this.subscriptionEpoch += 1;
-    this.subscribed = false;
+    this.subscriptions.invalidate();
     this.disconnectTransports();
   };
 
@@ -189,7 +186,7 @@ class SocketIoRedisFanOut {
       this.command.status === 'ready' &&
       this.publishing.status === 'ready' &&
       this.listening.status === 'ready' &&
-      this.subscribed
+      this.subscriptions.ready
     );
   }
   // #endregion
@@ -202,6 +199,10 @@ class SocketIoRedisFanOut {
   ) {
     this.publishing = this.openClient('publisher');
     this.listening = this.openClient('subscriber');
+    this.subscriptions = new RedisSubscriptionRecovery(
+      () => this.listening.status === 'ready',
+      () => this.subscribeCurrent(),
+    );
     this.publisher = {
       on: this.publishing.on.bind(this.publishing),
       off: this.publishing.off.bind(this.publishing),
@@ -237,12 +238,14 @@ class SocketIoRedisFanOut {
       on: this.listening.on.bind(this.listening),
       off: this.listening.off.bind(this.listening),
       subscribe: (channels: readonly string[]): void => {
+        const previousCount = this.channels.size;
         for (const channel of channels) this.channels.add(channel);
-        void this.restoreSubscriptions();
+        if (this.channels.size !== previousCount) this.subscribeNew();
       },
       psubscribe: (pattern: string): void => {
+        if (this.patterns.has(pattern)) return;
         this.patterns.add(pattern);
-        void this.restoreSubscriptions();
+        this.subscribeNew();
       },
       unsubscribe: (channels: readonly string[]): void => {
         for (const channel of channels) this.channels.delete(channel);
@@ -274,33 +277,25 @@ class SocketIoRedisFanOut {
     });
   }
 
-  /** Reads the current subscriber state again after commands settle. */
-  private acceptsSubscriptions(): boolean {
-    return !this.closed && this.listening.status === 'ready';
+  /** Requires a fresh acknowledgement when the adapter adds subscriptions. */
+  private subscribeNew(): void {
+    this.subscriptions.invalidate();
+    this.subscriptions.resume();
   }
 
-  /** Restores bounded control-plane subscriptions and admits traffic only after Redis ACKs them. */
-  private async restoreSubscriptions(): Promise<void> {
-    if (!this.acceptsSubscriptions()) return;
-    const epoch = ++this.subscriptionEpoch;
-    this.subscribed = false;
+  /** Waits for every command to settle before the next attempt can subscribe. */
+  private async subscribeCurrent(): Promise<boolean> {
     const pending: Promise<unknown>[] = [];
     if (this.channels.size > 0) pending.push(this.listening.subscribe(...this.channels));
     if (this.patterns.size > 0) pending.push(this.listening.psubscribe(...this.patterns));
-    try {
-      await Promise.all(pending);
-    } catch {
-      // The Redis client logs sanitized command failures. A failed subscription keeps admission off.
-      return;
-    }
-    if (this.subscriptionEpoch === epoch && this.acceptsSubscriptions()) {
-      this.subscribed = true;
-    }
+    const results = await Promise.allSettled(pending);
+    return results.every(({ status }) => status === 'fulfilled');
   }
 
   /** Removes watchers and closes both connections without replaying outstanding packets. */
   public async shutDown(): Promise<void> {
     this.closed = true;
+    this.subscriptions.stop();
     this.listening.off('ready', this.onSubscriberReady);
     for (const event of lostEvents) {
       this.command.off(event, this.onConnectionLost);

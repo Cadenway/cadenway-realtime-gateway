@@ -1,3 +1,5 @@
+import { socketAuthorityLua } from '../../../../../../infrastructure/redis/realtime-socket-authority.js';
+
 // The marker window covers Identity's longest session (30 days) and one ticket (60 seconds).
 const markerWindowMs = (30 * 24 * 60 * 60 + 60) * 1_000;
 const maximumResourceRooms = 32;
@@ -12,6 +14,7 @@ export const socketRoomLimitReply = 'limit-reached';
  * by a return to that role invalidates the earlier registrations.
  */
 export const socketRegistryScript: string = `
+${socketAuthorityLua}
 local socket = KEYS[1]
 local session = KEYS[2]
 local member = KEYS[3]
@@ -30,45 +33,25 @@ local deliveryChannel = ARGV[10]
 local encodedDelivery = ARGV[11]
 local limitReply = '${socketRoomLimitReply}'
 
-local storedIdentity = redis.call('HGET', socket, 'identity')
 if operation == 'unregister' then
-  if storedIdentity == identity then redis.call('DEL', socket) end
+  if redis.call('HGET', socket, 'identity') == identity then redis.call('DEL', socket) end
   return 1
 end
 
 local time = redis.call('TIME')
 local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
-if not expiresAt or expiresAt <= now or not sessionVersion or sessionVersion < 1 then
-  return false
-end
-if operation == 'register' then
-  if storedIdentity then
-    if storedIdentity ~= identity or redis.call('HGET', socket, 'registration') ~= requestId then
-      return false
-    end
-  elseif redis.call('EXISTS', socket) == 1 then
-    return false
-  end
-elseif storedIdentity ~= identity then
-  return false
-end
-
-local sessionMarker = redis.call('HMGET', session, 'version', 'terminal')
-if sessionMarker[2] == '1' or tonumber(sessionMarker[1] or '0') > sessionVersion then
-  return false
-end
-local membership = redis.call('HMGET', member, 'version', 'terminal', 'role')
+local membership, organizationLeaseVersion =
+  readSocketAuthority(session, member, organizationLease, sessionVersion, role, expiresAt, now)
+if not membership then return false end
 local membershipVersion = membership[1] or '0'
-if membership[2] == '1' or (membership[3] and membership[3] ~= role) then
-  return false
-end
-local organizationLeaseVersion = redis.call('GET', organizationLease) or '0'
 
 if operation == 'register' then
+  local storedIdentity = redis.call('HGET', socket, 'identity')
   if storedIdentity then
-    local lease = redis.call('HMGET', socket, 'membership', 'organizationLease')
-    return lease[1] == membershipVersion and lease[2] == organizationLeaseVersion
+    if redis.call('HGET', socket, 'registration') ~= requestId then return false end
+    return currentSocketRegistration(socket, identity, membershipVersion, organizationLeaseVersion) ~= nil
   end
+  if redis.call('EXISTS', socket) == 1 then return false end
   redis.call('HSET', socket, 'identity', identity, 'membership', membershipVersion,
     'organizationLease', organizationLeaseVersion, 'deliveryChannel', deliveryChannel,
     'registration', requestId, 'resourceRooms', 0,
@@ -78,10 +61,8 @@ if operation == 'register' then
   if membership[1] then redis.call('PEXPIREAT', member, expiresAt, 'GT') end
   return 1
 end
-local registration = redis.call('HMGET', socket, 'membership', 'resourceRooms', 'organizationLease')
-local resourceRooms = tonumber(registration[2])
-if registration[1] ~= membershipVersion or registration[3] ~= organizationLeaseVersion
-  or not resourceRooms then return false end
+local resourceRooms = currentSocketRegistration(socket, identity, membershipVersion, organizationLeaseVersion)
+if not resourceRooms then return false end
 
 local epoch = redis.call('GET', visibility) or '0'
 if operation == 'read' then return epoch end

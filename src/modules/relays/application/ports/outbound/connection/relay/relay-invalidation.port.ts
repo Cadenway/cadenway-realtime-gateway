@@ -23,5 +23,13 @@ export interface RelayInvalidationPort {
 
   /** Atomically fences tenant sockets once for the given producer fact. */
   disconnectOrganization(organizationId: string, factId: string): Promise<void>;
+
+  /** Invalidates subscriptions to the affected task while preserving other rooms. */
+  invalidateTaskRoom(
+    organizationId: string,
+    taskKey: string,
+    action: 'trash' | 'purge',
+    signal: AbortSignal,
+  ): Promise<void>;
   // #endregion
 }

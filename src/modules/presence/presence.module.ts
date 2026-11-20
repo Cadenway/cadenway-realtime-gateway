@@ -36,7 +36,8 @@ import { ExpirePresenceHandler } from './presentation/jobs/handlers/presence/exp
       ): RedisPresenceSubscription =>
         new RedisPresenceSubscription(
           redis,
-          (organizationId, packet) => connections.deliverPresence(organizationId, packet),
+          (organizationId, packet, stillCurrent) =>
+            connections.deliverPresence(organizationId, packet, stillCurrent),
           (check, onUnavailable) => gates.track('presence', check, onUnavailable),
         ),
     },

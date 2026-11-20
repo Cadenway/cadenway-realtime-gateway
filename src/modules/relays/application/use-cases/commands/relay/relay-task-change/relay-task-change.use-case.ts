@@ -67,7 +67,7 @@ export class RelayTaskChange {
     const fence = await this.connections.fence(recipient);
     if (fence === null) return;
     signal.throwIfAborted();
-    const accountKey = JSON.stringify([recipient.session.userId, recipient.session.role]);
+    const accountKey = JSON.stringify([recipient.session.userId, recipient.session.role, fence]);
     let proof = proofs.get(accountKey);
     const shared = proof !== undefined;
     if (proof === undefined) {

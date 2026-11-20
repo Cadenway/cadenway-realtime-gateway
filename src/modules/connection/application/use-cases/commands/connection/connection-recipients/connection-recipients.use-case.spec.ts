@@ -187,4 +187,95 @@ describe('ConnectionRecipients', () => {
     ]);
     expect(access.task).not.toHaveBeenCalled();
   });
+
+  it('fences trash before discovery and keeps restored rooms with current Task access', async () => {
+    const { connections, registry, transport, access } = fixture();
+    const hidden = recipient();
+    const restored = {
+      ...hidden,
+      socketId: 'restored',
+      session: { ...hidden.session, userId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b37' },
+    };
+    const outside = {
+      ...hidden,
+      socketId: 'outside',
+      session: { ...hidden.session, organizationId: otherOrganization },
+    };
+    transport.read.mockResolvedValue([hidden, restored, outside]);
+    access.task.mockImplementation((session) =>
+      Promise.resolve(
+        session.userId === restored.session.userId
+          ? { organizationId: organization, spaceId, listId, taskKey, taskId }
+          : null,
+      ),
+    );
+    const room = `task:${taskId}` as const;
+    registry.evict.mockResolvedValue(room);
+    const signal = new AbortController().signal;
+
+    await connections.invalidateTaskRoom(organization, taskKey, 'trash', signal);
+
+    expect(registry.advanceVisibility).toHaveBeenCalledExactlyOnceWith(organization);
+    expect(transport.read).toHaveBeenCalledExactlyOnceWith(`task-key:${organization}:${taskKey}`);
+    expect(registry.advanceVisibility.mock.invocationCallOrder[0]).toBeLessThan(
+      transport.read.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(access.task.mock.calls).toEqual([
+      [hidden.session, taskKey, signal],
+      [restored.session, taskKey, signal],
+    ]);
+    expect(registry.evict).toHaveBeenCalledExactlyOnceWith(hidden.socketId, hidden.session, '5', {
+      kind: 'task',
+      taskKey,
+    });
+    expect(transport.leave).toHaveBeenCalledExactlyOnceWith(hidden, [
+      room,
+      `task-key:${organization}:${taskKey}`,
+    ]);
+    expect(transport.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('evicts a permanently purged key without querying Task and retries an overlapped fence', async () => {
+    const { connections, registry, transport, access } = fixture();
+    const selected = recipient();
+    transport.read.mockResolvedValue([selected]);
+    registry.readFence.mockResolvedValueOnce('5').mockResolvedValueOnce('6');
+    const signal = new AbortController().signal;
+
+    await expect(
+      connections.invalidateTaskRoom(organization, taskKey, 'purge', signal),
+    ).rejects.toThrow('overlapped with a visibility change');
+    expect(transport.leave).not.toHaveBeenCalled();
+    registry.evict.mockResolvedValue(`task:${taskId}`);
+
+    await connections.invalidateTaskRoom(organization, taskKey, 'purge', signal);
+
+    expect(transport.leave).toHaveBeenCalledExactlyOnceWith(selected, [
+      `task:${taskId}`,
+      `task-key:${organization}:${taskKey}`,
+    ]);
+    expect(access.task).not.toHaveBeenCalled();
+    expect(transport.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('stops queued trash checks and never evicts after cancellation', async () => {
+    const { connections, registry, transport, access } = fixture();
+    const selected = recipient();
+    transport.read.mockResolvedValue(
+      Array.from({ length: 9 }, (_, index) => ({ ...selected, socketId: String(index) })),
+    );
+    const controller = new AbortController();
+    access.task.mockImplementation(async () => {
+      await Promise.resolve();
+      controller.abort();
+      return null;
+    });
+
+    await expect(
+      connections.invalidateTaskRoom(organization, taskKey, 'trash', controller.signal),
+    ).rejects.toThrow();
+
+    expect(access.task).toHaveBeenCalledTimes(8);
+    expect(registry.evict).not.toHaveBeenCalled();
+  });
 });

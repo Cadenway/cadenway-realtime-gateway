@@ -85,22 +85,27 @@ export class SocketIoRecipients implements RecipientTransport {
     await this.emitLocal(socket, session, delivery.room, delivery.fence, deadline, delivery.packet);
   }
 
-  /** Rechecks only this replica's organization sockets before emitting a visible presence change. */
-  public async deliverPresence(organizationId: string, packet: unknown): Promise<void> {
-    if (!this.available()) return;
+  /** Rechecks local socket authorization and presence freshness before emitting. */
+  public async deliverPresence(
+    organizationId: string,
+    packet: unknown,
+    stillCurrent: () => boolean,
+  ): Promise<void> {
+    if (!this.available() || !stillCurrent()) return;
     const namespace = this.readyServer().sockets;
     const room = `org:${organizationId}` as const;
     const members = namespace.adapter.rooms.get(room);
     if (members === undefined) return;
     const deadline = Date.now() + presenceDeliveryMs;
     for (const id of members) {
-      if (!this.available() || Date.now() >= deadline) return;
+      if (!this.available() || !stillCurrent() || Date.now() >= deadline) return;
       const socket = namespace.sockets.get(id);
       if (socket === undefined) continue;
       const session = this.readySession(socket);
       if (session?.organizationId !== organizationId) continue;
       const fence = await this.registry.readFence(id, session);
-      if (fence !== null) await this.emitLocal(socket, session, room, fence, deadline, packet);
+      if (fence !== null)
+        await this.emitLocal(socket, session, room, fence, deadline, packet, stillCurrent);
     }
   }
 
@@ -124,11 +129,13 @@ export class SocketIoRecipients implements RecipientTransport {
     fence: string,
     deadline: number,
     packet: unknown,
+    stillCurrent?: () => boolean,
   ): Promise<void> {
-    if (!isInLocalRoom(socket, room)) return;
+    if (stillCurrent?.() === false || !isInLocalRoom(socket, room)) return;
     const allowed = await this.registry.hasSubscription(socket.id, session, fence, room);
     if (
       allowed &&
+      stillCurrent?.() !== false &&
       this.available() &&
       isInLocalRoom(socket, room) &&
       Date.now() < Math.min(deadline, session.expiresAt)

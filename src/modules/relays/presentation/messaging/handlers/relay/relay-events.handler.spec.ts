@@ -29,6 +29,7 @@ function setup() {
     changeMemberRole: vi.fn().mockResolvedValue(undefined),
     advanceVisibility: vi.fn().mockResolvedValue(undefined),
     disconnectOrganization: vi.fn().mockResolvedValue(undefined),
+    invalidateTaskRoom: vi.fn().mockResolvedValue(undefined),
   } satisfies RelayInvalidationPort;
   const execute = vi.fn().mockResolvedValue(undefined);
   const changes = { execute } as unknown as RelayTaskChange;
@@ -92,6 +93,25 @@ describe('RelayEventsHandler', () => {
       }),
     ).rejects.toThrow('Redis unavailable');
     expect(invalidation.advanceVisibility).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['task.trashed.v1', 'trash'],
+    ['task.purged.v1', 'purge'],
+  ])('routes %s exclusively to the affected task key', async (event, action) => {
+    const { handler, subscriptions, invalidation } = setup();
+    await handler.onApplicationBootstrap();
+    const subscription = subscriptions.find((candidate) => candidate.event === event);
+    const signal = new AbortController().signal;
+    expect(subscription).toBeDefined();
+    await subscription?.handle({ organizationId: 'ORG-A', key: 'CAD-42' } as never, { signal });
+    expect(invalidation.invalidateTaskRoom).toHaveBeenCalledExactlyOnceWith(
+      'org-a',
+      'CAD-42',
+      action,
+      signal,
+    );
+    expect(invalidation.disconnectOrganization).not.toHaveBeenCalled();
   });
 
   it('projects a producer status fact without its display or audience data', async () => {

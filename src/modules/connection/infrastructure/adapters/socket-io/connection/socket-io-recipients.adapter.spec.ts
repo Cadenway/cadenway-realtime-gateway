@@ -131,7 +131,7 @@ describe('owning socket replica', () => {
       new Map([[room, new Set([target.id, staleForeign.id, 'not-local'])]]),
     );
     const packet = { type: 'user.status-changed.v1' };
-    await receiver.deliverPresence(organizationId, packet);
+    await receiver.deliverPresence(organizationId, packet, () => true);
 
     expect(remoteDirectory).not.toHaveBeenCalled();
     expect(registry.readFence).toHaveBeenCalledExactlyOnceWith(
@@ -140,5 +140,30 @@ describe('owning socket replica', () => {
     );
     expect(target.volatile.emit).toHaveBeenCalledExactlyOnceWith('change', packet);
     expect(staleForeign.volatile.emit).not.toHaveBeenCalled();
+  });
+
+  it('does not emit an old online status after a newer invisible member becomes offline', async () => {
+    const room = `org:${organizationId}`;
+    const target = socket('owned', [room]);
+    const { receiver, registry } = replica([target], new Map([[room, new Set([target.id])]]));
+    let completeAuthorization!: (allowed: boolean) => void;
+    const delayedAuthorization = new Promise<boolean>((resolve) => {
+      completeAuthorization = resolve;
+    });
+    registry.hasSubscription.mockReturnValueOnce(delayedAuthorization);
+    let current = true;
+    const online = { type: 'user.status-changed.v1', data: { status: 'online' } };
+    const invisible = { type: 'user.status-changed.v1', data: { status: 'offline' } };
+
+    const oldDelivery = receiver.deliverPresence(organizationId, online, () => current);
+    await vi.waitFor(() => {
+      expect(registry.hasSubscription).toHaveBeenCalledOnce();
+    });
+    current = false;
+    await receiver.deliverPresence(organizationId, invisible, () => true);
+    completeAuthorization(true);
+    await oldDelivery;
+
+    expect(target.volatile.emit).toHaveBeenCalledExactlyOnceWith('change', invisible);
   });
 });
