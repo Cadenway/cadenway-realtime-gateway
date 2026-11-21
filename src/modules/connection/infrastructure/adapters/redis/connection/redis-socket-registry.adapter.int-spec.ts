@@ -1,11 +1,14 @@
 import { ResilientRedisClient } from '@cadenway/nest-common/redis';
+import { metrics } from '@opentelemetry/api';
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { RealtimeAdmissionGates } from '../../../../../../infrastructure/redis/realtime-admission-gates.js';
 import type { RealtimeRoom } from '../../../../application/models/connection/realtime-room.model.js';
 import type { RealtimeSession } from '../../../../application/models/connection/realtime-session.model.js';
+import { RedisRelayInbox } from './redis-relay-inbox.adapter.js';
 import { RedisSocketRegistry } from './redis-socket-registry.adapter.js';
 
 /** Reads the Redis version used by the service in local development. */
@@ -298,6 +301,79 @@ describe('Redis socket registry across two gateway instances', () => {
     await first.markSessionRevoked(session.sessionId, 2);
     expect(await second.publish(socketId, session, current, room, packet)).toBe(false);
     expect(captured).toHaveBeenCalledOnce();
+  });
+
+  it('counts each dropped owner handoff at capacity and admits new handoffs when checks finish', async () => {
+    if (redis === undefined) throw new Error('Missing Redis fixture.');
+    const subscriberSource = new ResilientRedisClient(redis.getConnectionUrl(), {
+      enableOfflineQueue: false,
+      reportOutages: false,
+    });
+    clients.push(subscriberSource);
+    const session = verifiedSession();
+    const socketId = randomUUID();
+    const room = `task:${randomUUID()}` as const;
+    expect(await first.register(socketId, session)).toBe(true);
+    const fence = await currentEpoch(first, socketId, session);
+    await first.join(socketId, session, fence, { kind: 'task', taskKey: 'CAD-428' }, room);
+
+    let releaseChecks = (): void => {
+      throw new Error('The suspended checks did not initialize.');
+    };
+    const suspendedChecks = new Promise<void>((resolve) => {
+      releaseChecks = () => {
+        resolve();
+      };
+    });
+    const receive = vi.fn<(payload: string) => Promise<void>>(() => suspendedChecks);
+    const add = vi.fn<(value: number) => void>();
+    const meter = metrics.getMeter('cadenway-realtime-gateway');
+    const counter = vi.spyOn(meter, 'createCounter').mockReturnValue({ add });
+    const getMeter = vi.spyOn(metrics, 'getMeter').mockReturnValue(meter);
+    const unavailable = vi.fn();
+    let inbox: RedisRelayInbox | undefined;
+    try {
+      inbox = new RedisRelayInbox(
+        subscriberSource,
+        first.deliveryChannel,
+        receive,
+        new RealtimeAdmissionGates(),
+      );
+      inbox.onUnavailable(unavailable);
+      await vi.waitFor(() => {
+        expect(inbox?.available).toBe(true);
+      });
+      const packet = { type: 'task.updated.v1', data: { changed: ['status'] } };
+      const posted = await Promise.all(
+        Array.from({ length: 130 }, () => second.publish(socketId, session, fence, room, packet)),
+      );
+      expect(posted.every(Boolean)).toBe(true);
+      await vi.waitFor(() => {
+        expect(receive).toHaveBeenCalledTimes(128);
+        expect(add.mock.calls).toEqual([[1], [1]]);
+      });
+      expect(counter).toHaveBeenCalledExactlyOnceWith(
+        'cadenway.realtime.relay.handoff.dropped',
+        expect.objectContaining({ unit: '{handoff}' }),
+      );
+      expect(inbox.available).toBe(true);
+      expect(unavailable).not.toHaveBeenCalled();
+
+      const anotherTenant = { ...session, organizationId: randomUUID() };
+      expect(await second.publish(socketId, anotherTenant, fence, room, packet)).toBe(false);
+      releaseChecks();
+      expect(await second.publish(socketId, session, fence, room, packet)).toBe(true);
+      await vi.waitFor(() => {
+        expect(receive).toHaveBeenCalledTimes(129);
+      });
+      expect(add.mock.calls).toEqual([[1], [1]]);
+    } finally {
+      releaseChecks();
+      getMeter.mockRestore();
+      counter.mockRestore();
+      await inbox?.onApplicationShutdown();
+      await first.unregister(socketId, session);
+    }
   });
 
   it('keeps a tenant close marker after a missed broadcast and allows only new tenant sockets', async () => {

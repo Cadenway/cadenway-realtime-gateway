@@ -43,6 +43,12 @@ slot, and leaving frees one. An authorized request for a new selection at capaci
   and recipient lookup across instances. The task-key index is written only after a stable Task UUID
   has been authorized. Redis verifies the exact lease, epoch and room while publishing a short-lived
   handoff to its owning replica. Only that replica rechecks the lease and emits to its own socket.
+- Each replica admits up to 128 concurrent owner handoffs. At capacity it drops incoming handoffs
+  without queueing and increments the OpenTelemetry counter
+  `cadenway.realtime.relay.handoff.dropped` with no metric attributes. It exports this counter
+  through the configured OTLP pipeline. The counter only measures drops observed by the inbox.
+  Existing connections remain open and Redis Pub/Sub provides no replay. A client needs an
+  independent API resynchronization path to recover a change it missed while connected.
 - Admission needs the acknowledged private route. A connection checks its lease periodically, so
   a dropped cross-instance close hint cannot keep a revoked socket connected beyond the recheck.
   Bound local checks close affected sockets if Redis cannot resolve their lease within the deadline.
