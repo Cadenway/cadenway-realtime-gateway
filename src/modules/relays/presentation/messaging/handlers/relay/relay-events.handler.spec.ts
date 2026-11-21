@@ -15,7 +15,7 @@ interface CapturedSubscription {
   // #endregion
 }
 
-function setup() {
+function setup(gitRelaysEnabled = true) {
   const subscriptions: CapturedSubscription[] = [];
   const subscribe = vi.fn((subscription: CapturedSubscription) => {
     subscriptions.push(subscription);
@@ -38,12 +38,43 @@ function setup() {
     invalidation,
     changes,
     execute,
-    handler: new RelayEventsHandler(consumers, new ApplyRelayInvalidation(invalidation), changes),
+    handler: new RelayEventsHandler(
+      consumers,
+      new ApplyRelayInvalidation(invalidation),
+      changes,
+      gitRelaysEnabled,
+    ),
   };
 }
 
 describe('RelayEventsHandler', () => {
-  it('registers the fifteen exact durable names once', async () => {
+  it('keeps Git subscriptions disabled by default', async () => {
+    const subscriptions: CapturedSubscription[] = [];
+    const consumers = {
+      subscribe: vi.fn((subscription: CapturedSubscription) => {
+        subscriptions.push(subscription);
+        return Promise.resolve();
+      }),
+    } as unknown as EventConsumers;
+    const { invalidation, changes } = setup();
+    const handler = new RelayEventsHandler(
+      consumers,
+      new ApplyRelayInvalidation(invalidation),
+      changes,
+    );
+    await handler.onApplicationBootstrap();
+    expect(subscriptions).toHaveLength(15);
+    expect(subscriptions.some((subscription) => subscription.event.startsWith('git.'))).toBe(false);
+  });
+
+  it('keeps Git subscriptions disabled when explicitly switched off', async () => {
+    const { handler, subscriptions } = setup(false);
+    await handler.onApplicationBootstrap();
+    expect(subscriptions).toHaveLength(15);
+    expect(subscriptions.some((subscription) => subscription.event.startsWith('git.'))).toBe(false);
+  });
+
+  it('registers the twenty exact durable names once', async () => {
     const { handler, subscriptions } = setup();
     await handler.onApplicationBootstrap();
     expect(subscriptions.map((subscription) => [subscription.handler, subscription.event])).toEqual(
@@ -63,8 +94,58 @@ describe('RelayEventsHandler', () => {
         ['relay-task-updated', 'task.updated.v1'],
         ['relay-task-status-changed', 'task.status-changed.v1'],
         ['relay-comment-created', 'comment.created.v1'],
+        ['relay-git-branch-created', 'git.branch-created.v1'],
+        ['relay-git-pr-opened', 'git.pr-opened.v1'],
+        ['relay-git-pr-merged', 'git.pr-merged.v1'],
+        ['relay-git-pr-closed', 'git.pr-closed.v1'],
+        ['relay-git-checks-completed', 'git.checks-completed.v1'],
       ],
     );
+  });
+
+  it.each([
+    'git.branch-created.v1',
+    'git.pr-opened.v1',
+    'git.pr-merged.v1',
+    'git.pr-closed.v1',
+    'git.checks-completed.v1',
+  ])('projects %s as a version-one Git invalidation', async (event) => {
+    const { handler, subscriptions, execute } = setup();
+    await handler.onApplicationBootstrap();
+    const subscription = subscriptions.find((candidate) => candidate.event === event);
+    expect(subscription).toBeDefined();
+    const signal = new AbortController().signal;
+    const fact = {
+      id: 'EVENT-A',
+      occurredAt: '2026-11-20T12:00:00Z',
+      organizationId: 'ORG-A',
+      version: 8,
+      taskKey: 'CAD-42',
+      spaceId: 'SPACE-A',
+      listId: 'LIST-A',
+      actor: { type: 'git', id: 'integration-a' },
+      gitLinkId: 'link-a',
+      changed: ['state'],
+    };
+    await subscription?.handle(fact as never, { signal });
+    expect(execute).toHaveBeenCalledExactlyOnceWith(
+      {
+        id: 'event-a',
+        occurredAt: fact.occurredAt,
+        organizationId: 'org-a',
+        version: 1,
+        key: 'CAD-42',
+        spaceId: 'space-a',
+        listId: 'list-a',
+        type: 'git.links-changed.v1',
+        data: {},
+      },
+      signal,
+    );
+    await subscription?.handle({ ...fact, actor: { type: 'user', id: 'user-a' } } as never, {
+      signal,
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('passes the stable fact ID to atomic organization invalidation', async () => {

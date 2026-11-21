@@ -66,6 +66,9 @@ export interface AppConfig
    * @readonly
    */
   readonly TASK_SERVICE_URL: string;
+
+  /** Enables Git event consumption after the broker grants the five named durables. */
+  readonly REALTIME_GIT_RELAYS_ENABLED: boolean;
   // #endregion
 }
 
@@ -138,7 +141,7 @@ const allowedOriginsSchema: z.ZodType<readonly string[]> = z
  * private JSON Web Key with its `kid`. `REDIS_URL` and the three NATS variables keep the rules of
  * the kit shapes; `NATS_USER` and `NATS_PASSWORD` are optional there, for an anonymous local broker
  * only: every broker of cadenway-ops, and the one of `compose.dev.yaml`, refuses a connection
- * without them. No variable of this schema has a default except those of `baseConfigShape`.
+ * without them. Git subscriptions are disabled by default.
  *
  * @type {z.ZodType<AppConfig>}
  */
@@ -150,4 +153,8 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   ALLOWED_ORIGINS: allowedOriginsSchema,
   IDENTITY_SERVICE_URL: serviceUrlSchema,
   TASK_SERVICE_URL: serviceUrlSchema,
+  REALTIME_GIT_RELAYS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });

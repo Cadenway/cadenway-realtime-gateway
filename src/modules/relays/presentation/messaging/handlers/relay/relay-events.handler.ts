@@ -1,5 +1,10 @@
 import {
   COMMENT_CREATED_V1,
+  GIT_BRANCH_CREATED_V1,
+  GIT_CHECKS_COMPLETED_V1,
+  GIT_PR_CLOSED_V1,
+  GIT_PR_MERGED_V1,
+  GIT_PR_OPENED_V1,
   LIST_ACCESS_CHANGED_V1,
   LIST_DELETED_V1,
   MEMBER_REMOVED_V1,
@@ -76,6 +81,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     private readonly consumers: EventConsumers,
     private readonly invalidation: ApplyRelayInvalidation,
     private readonly changes: RelayTaskChange,
+    private readonly gitRelaysEnabled = false,
   ) {}
   // #endregion
 
@@ -278,6 +284,40 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
           signal,
         ),
     });
+    if (!this.gitRelaysEnabled) return;
+    for (const [handler, event] of [
+      ['relay-git-branch-created', GIT_BRANCH_CREATED_V1],
+      ['relay-git-pr-opened', GIT_PR_OPENED_V1],
+      ['relay-git-pr-merged', GIT_PR_MERGED_V1],
+      ['relay-git-pr-closed', GIT_PR_CLOSED_V1],
+      ['relay-git-checks-completed', GIT_CHECKS_COMPLETED_V1],
+    ] as const) {
+      await this.consumers.subscribe({
+        handler,
+        schemas: eventSchemas,
+        event,
+        handle: (fact, { signal }) => {
+          signal.throwIfAborted();
+          if (fact.actor.type !== 'git') return Promise.resolve();
+          return this.changes.execute(
+            taskFact(
+              'git.links-changed.v1',
+              {
+                id: fact.id,
+                occurredAt: fact.occurredAt,
+                organizationId: fact.organizationId,
+                version: 1,
+                key: fact.taskKey,
+                spaceId: fact.spaceId,
+                listId: fact.listId,
+              },
+              {},
+            ),
+            signal,
+          );
+        },
+      });
+    }
   }
 
   private async invalidateOrganization(

@@ -9,6 +9,7 @@ import { EventPublisher, MessagingModule } from '@cadenway/nest-messaging';
 import {
   COMMENT_CREATED_V1,
   eventSchemas,
+  GIT_PR_OPENED_V1,
   SESSION_REVOKED_V1,
   TASK_STATUS_CHANGED_V1,
   TASK_UPDATED_V1,
@@ -866,6 +867,7 @@ describe('realtime relay across two instances', () => {
     cleanup.push(() => upstream.close());
     env.IDENTITY_SERVICE_URL = upstream.url;
     env.TASK_SERVICE_URL = upstream.url;
+    env.REALTIME_GIT_RELAYS_ENABLED = 'true';
     for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
     config = loadConfig(appConfigSchema);
     admin = await connectNats({ servers: natsUrl, user: 'admin', pass: adminPassword });
@@ -1102,6 +1104,79 @@ describe('realtime relay across two instances', () => {
     expect(received.beta[4]).toMatchObject({ id: next.id });
     await delay(300);
     expect(received.alpha).toHaveLength(3);
+  }, 40_000);
+
+  it('relays a Git link once to the authorized organization and rejects stale placement', async () => {
+    const readerId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b41';
+    const outsiderId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b42';
+    upstream.issue('g'.repeat(43), session(readerId, organizationId), true);
+    upstream.issue('h'.repeat(43), session(outsiderId, otherOrganizationId), true);
+    const [reader, outsider] = await Promise.all([
+      connect(first.url, 'g'.repeat(43)),
+      connect(second.url, 'h'.repeat(43)),
+    ]);
+    expect(await join(reader)).toEqual({ ok: true });
+    expect(await join(outsider)).toEqual({ ok: false, code: 'room.not-found' });
+    const received: unknown[] = [];
+    const foreign: unknown[] = [];
+    reader.on('change', (packet: unknown) => {
+      if ((packet as { type?: string }).type === 'git.links-changed.v1') received.push(packet);
+    });
+    outsider.on('change', (packet: unknown) => {
+      if ((packet as { type?: string }).type === 'git.links-changed.v1') foreign.push(packet);
+    });
+
+    const publisher = publisherContext.get(EventPublisher);
+    const payload = eventSchemas[GIT_PR_OPENED_V1].parse({
+      id: '019a7005-6f7a-7b8c-9d0e-1f2a3b4c5d50',
+      occurredAt: '2026-11-08T10:41:00Z',
+      organizationId,
+      actor: { type: 'git', id: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e01' },
+      version: 1,
+      taskKey,
+      spaceId,
+      listId,
+      gitLinkId: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e03',
+      changed: ['state'],
+    });
+    const event = {
+      name: GIT_PR_OPENED_V1,
+      subject: 'evt.git.pr-opened.v1',
+      stream: 'EVENTS',
+      payload,
+      traceparent: null,
+    };
+    const published = await publisher.publishEnvelope(event);
+    expect(published.duplicate).toBe(false);
+    expect(await waitFor(() => Promise.resolve(received.length), 1)).toBe(1);
+    expect(received[0]).toEqual({
+      id: payload.id,
+      type: 'git.links-changed.v1',
+      at: payload.occurredAt,
+      version: 1,
+      data: { taskId },
+    });
+    expect((await publisher.publishEnvelope(event)).duplicate).toBe(true);
+
+    const checksBeforeStale = upstream.taskChecks;
+    const stalePayload = eventSchemas[GIT_PR_OPENED_V1].parse({
+      ...payload,
+      id: '019a7005-6f7a-7b8c-9d0e-1f2a3b4c5d51',
+      listId: '019a7001-2b3c-7d4e-8f5a-6b7c8d9e0f13',
+    });
+    await publisher.publishEnvelope({
+      ...event,
+      payload: stalePayload,
+    });
+    await vi.waitFor(
+      () => {
+        expect(upstream.taskChecks).toBeGreaterThan(checksBeforeStale);
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+    await delay(300);
+    expect(received).toHaveLength(1);
+    expect(foreign).toEqual([]);
   }, 40_000);
 
   it('publishes offline when the last presence lease expires', async () => {

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Consumes the fifteen facts declared by the installed realtime contract and sends bounded,
+Consumes the facts declared by the installed realtime contract and sends bounded,
 recipient-authorized task and comment invalidations. Connection owns socket sessions and rooms.
 
 ## Public entry points
@@ -25,6 +25,11 @@ only a stable task ID and changed field names. A comment packet carries only tas
 Session revocation and organization switches, membership removal and role changes, space and list
 visibility and deletion, task update, status, trash and purge, and comment creation use the
 individual versioned durables in the published realtime contract.
+
+The five Git branch, pull request and checks facts produce `git.links-changed.v1` notices.
+Each notice carries only the current authorized task ID and uses browser protocol version 1.
+The Git subscriptions start only when `REALTIME_GIT_RELAYS_ENABLED` is enabled after the
+broker grants the realtime identity access to their durable consumers.
 
 ## Invariants
 
