@@ -233,6 +233,37 @@ describe('RelayTaskChange', () => {
     );
   });
 
+  it('sends only the authorized task ID for a Git change and deduplicates rooms', async () => {
+    const { relay, connections } = setup();
+    await relay.execute(
+      { ...fact, type: 'git.links-changed.v1', data: {}, version: 1 },
+      new AbortController().signal,
+    );
+    expect(connections.deliver).toHaveBeenCalledExactlyOnceWith(recipient, `task:${taskId}`, '5', {
+      id,
+      type: 'git.links-changed.v1',
+      at: fact.occurredAt,
+      version: 1,
+      data: { taskId },
+    });
+  });
+
+  it('withholds a Git notice after a task changes placement', async () => {
+    const { relay, connections } = setup();
+    connections.authorizeTask.mockResolvedValue({
+      organizationId,
+      spaceId,
+      listId: 'new-list',
+      taskId,
+      taskKey: fact.key,
+    });
+    await relay.execute(
+      { ...fact, type: 'git.links-changed.v1', data: {}, version: 1 },
+      new AbortController().signal,
+    );
+    expect(connections.deliver).not.toHaveBeenCalled();
+  });
+
   it('propagates a failed visibility check for broker redelivery', async () => {
     const { relay, connections } = setup();
     connections.authorizeTask.mockRejectedValue(new Error('Task unavailable'));

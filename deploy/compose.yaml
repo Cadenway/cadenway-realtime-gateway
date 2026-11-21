@@ -24,6 +24,7 @@ services:
       TASK_SERVICE_URL: ${TASK_SERVICE_URL}
       # The broker, read by @cadenway/nest-messaging: readiness answers 503 while it does not answer.
       NATS_URL: ${NATS_URL}
+      REALTIME_GIT_RELAYS_ENABLED: ${REALTIME_GIT_RELAYS_ENABLED:-false}
       NATS_USER: realtime-gateway
       NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}
     networks:

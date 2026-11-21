@@ -1,6 +1,8 @@
+import { CONFIG } from '@cadenway/nest-common';
 import { EventConsumers, MessagingConnection } from '@cadenway/nest-messaging';
 import { Module } from '@nestjs/common';
 
+import type { AppConfig } from '../../config/app-config.js';
 import { RelayBrokerReadiness } from '../../infrastructure/nats/relay-broker-readiness.js';
 import { RealtimeAdmissionGates } from '../../infrastructure/redis/realtime-admission-gates.js';
 import { RedisModule } from '../../infrastructure/redis/redis.module.js';
@@ -40,12 +42,19 @@ const eventStream = 'EVENTS';
     },
     {
       provide: RelayEventsHandler,
-      inject: [EventConsumers, ApplyRelayInvalidation, RelayTaskChange],
+      inject: [EventConsumers, ApplyRelayInvalidation, RelayTaskChange, CONFIG],
       useFactory: (
         consumers: EventConsumers,
         invalidation: ApplyRelayInvalidation,
         changes: RelayTaskChange,
-      ): RelayEventsHandler => new RelayEventsHandler(consumers, invalidation, changes),
+        config: AppConfig,
+      ): RelayEventsHandler =>
+        new RelayEventsHandler(
+          consumers,
+          invalidation,
+          changes,
+          config.REALTIME_GIT_RELAYS_ENABLED,
+        ),
     },
     {
       provide: RelayBrokerReadiness,
