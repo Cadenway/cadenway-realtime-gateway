@@ -6,7 +6,6 @@ export type ChangeRoomOutput =
       readonly kind: 'joined';
       readonly room: RealtimeRoom;
       readonly previousRoom: RealtimeRoom | null;
-      readonly fence: string;
     }
   | { readonly kind: 'left'; readonly room: RealtimeRoom | null }
   | { readonly kind: 'not-found' | 'unavailable' | 'invalidated' | 'room-limit' };

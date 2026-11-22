@@ -11,7 +11,11 @@ export interface SocketPresencePort {
   heartbeat(socketId: string, session: RealtimeSession): Promise<boolean>;
 
   /** Sets a selectable status for the verified membership. */
-  set(socketId: string, session: RealtimeSession, status: SocketPresenceStatus): Promise<boolean>;
+  set(
+    socketId: string,
+    session: RealtimeSession,
+    status: SocketPresenceStatus,
+  ): Promise<boolean | 'limited'>;
 
   /** Clears only the supplied socket's lease. */
   disconnect(socketId: string, session: RealtimeSession): Promise<void>;

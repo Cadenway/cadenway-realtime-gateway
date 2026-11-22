@@ -13,6 +13,10 @@ import { RealtimeIdentityClient } from './realtime-identity.client.js';
 const fixtureTicket = '0'.repeat(43);
 const memberId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b31';
 const sessionId = '019a6a2e-4b1c-7d3e-8f5a-2c9b7e1d4a60';
+const confirmedHeaders = {
+  'Cache-Control': 'no-store',
+  'Preference-Applied': 'cadenway-saml-source-membership',
+};
 const redemption = (sessionExpiresAt = new Date(Date.now() + 60_000).toISOString()) => ({
   sessionId,
   sessionVersion: 5,
@@ -39,6 +43,7 @@ describe('RealtimeIdentityClient', () => {
       const request = new Request(input, options);
       expect(request.url).toBe(`${baseUrl}/internal/v1/realtime/tickets/redemption`);
       expect(request.method).toBe('POST');
+      expect(request.headers.get('prefer')).toBe('cadenway-saml-source-membership');
       expect(await request.json()).toEqual({ token: fixtureTicket });
       const principal = await upstream.verifier.verify(
         request.headers.get('authorization')?.slice(7) ?? '',
@@ -49,7 +54,7 @@ describe('RealtimeIdentityClient', () => {
         role: null,
         scopes: [],
       });
-      return Response.json(expected, { headers: { 'Cache-Control': 'no-store' } });
+      return Response.json(expected, { headers: confirmedHeaders });
     });
 
     await expect(
@@ -123,9 +128,20 @@ describe('RealtimeIdentityClient', () => {
   it('declines a redeemed session whose lease has expired', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(
       Response.json(redemption(new Date(0).toISOString()), {
-        headers: { 'Cache-Control': 'no-store' },
+        headers: confirmedHeaders,
       }),
     );
     await expect(identity(fetch).redeem(fixtureTicket)).resolves.toBeNull();
+  });
+
+  it('requires confirmation that Identity evaluated the negotiated SAML source binding', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json(redemption(), { headers: { 'Cache-Control': 'no-store' } }),
+      );
+    await expect(identity(fetch).redeem(fixtureTicket)).rejects.toThrow(
+      'Identity ticket redemption is unavailable.',
+    );
   });
 });

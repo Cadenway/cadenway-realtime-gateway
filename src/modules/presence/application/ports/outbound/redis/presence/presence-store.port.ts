@@ -11,7 +11,7 @@ export interface PresenceStore {
   heartbeat(connection: PresenceConnection): Promise<boolean>;
 
   /** Changes the member preference only while this socket has a live lease. */
-  set(connection: PresenceConnection, status: PresenceStatus): Promise<boolean>;
+  set(connection: PresenceConnection, status: PresenceStatus): Promise<boolean | 'limited'>;
 
   /** Removes this socket's lease and publishes an offline transition when it was the last. */
   disconnect(connection: PresenceConnection): Promise<void>;

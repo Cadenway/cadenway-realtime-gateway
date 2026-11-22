@@ -45,5 +45,13 @@ export interface RecipientRegistry extends Pick<SocketRegistryPort, 'readFence'>
 
   /** Invalidates existing organization leases, including an unreachable transport. */
   invalidateOrganizationLeases(organizationId: string, factId: string): Promise<void>;
+
+  /** Records that only subscriptions using this owner-verified resource need a new lease. */
+  invalidateScope(
+    organizationId: string,
+    kind: 'space' | 'list' | 'task',
+    scopeId: string,
+    factId: string,
+  ): Promise<void>;
   // #endregion
 }

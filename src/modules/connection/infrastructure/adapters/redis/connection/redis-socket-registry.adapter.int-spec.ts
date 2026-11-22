@@ -394,6 +394,51 @@ describe('Redis socket registry across two gateway instances', () => {
     expect(await second.readFence(freshSocket, session)).toBe('1');
   });
 
+  it('closes only subscriptions bound to a changed space, with deduplicated redelivery', async () => {
+    const session = verifiedSession();
+    const affected = randomUUID();
+    const unaffected = randomUUID();
+    const spaceId = randomUUID();
+    const otherSpaceId = randomUUID();
+    const listId = randomUUID();
+    const otherListId = randomUUID();
+    const task = { kind: 'task', taskKey: 'CAD-42' } as const;
+    const taskRoom = `task:${randomUUID()}` as const;
+    const otherList = { kind: 'list', listId: otherListId } as const;
+    const otherRoom = `list:${otherListId}` as const;
+    expect(await first.register(affected, session)).toBe(true);
+    expect(await first.register(unaffected, session)).toBe(true);
+    const fence = await currentEpoch(first, affected, session);
+    expect(
+      await first.join(affected, session, fence, task, taskRoom, { listId, spaceId }),
+    ).toMatchObject({ kind: 'joined' });
+    expect(
+      await first.join(unaffected, session, fence, otherList, otherRoom, {
+        spaceId: otherSpaceId,
+        listId: otherListId,
+      }),
+    ).toMatchObject({ kind: 'joined' });
+
+    const factId = randomUUID();
+    await second.invalidateScope(session.organizationId, 'space', spaceId, factId);
+    expect(await first.readFence(affected, session)).toBeNull();
+    const current = await currentEpoch(first, unaffected, session);
+    expect(current).not.toBe(fence);
+    expect(await first.hasSubscription(affected, session, current, taskRoom)).toBe(false);
+    expect(await first.hasSubscription(unaffected, session, current, otherRoom)).toBe(true);
+
+    const renewed = randomUUID();
+    expect(await first.register(renewed, session)).toBe(true);
+    expect(
+      await first.join(renewed, session, current, task, taskRoom, { listId, spaceId }),
+    ).toMatchObject({ kind: 'joined' });
+    await second.invalidateScope(session.organizationId, 'space', spaceId, factId);
+    expect(await first.readFence(renewed, session)).toBe(current);
+    await second.invalidateScope(session.organizationId, 'list', listId, randomUUID());
+    expect(await first.readFence(renewed, session)).toBeNull();
+    expect(await first.readFence(unaffected, session)).not.toBeNull();
+  });
+
   it('allocates one shared slot across concurrent joins and frees it only once on leave', async () => {
     const session = verifiedSession();
     const socketId = randomUUID();

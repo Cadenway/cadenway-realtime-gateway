@@ -18,11 +18,13 @@ export interface RelayInvalidationPort {
     role: 'owner' | 'admin' | 'member' | 'guest',
   ): Promise<void>;
 
-  /** Advances the shared visibility epoch without admitting stale proofs. */
-  advanceVisibility(organizationId: string): Promise<void>;
-
-  /** Atomically fences tenant sockets once for the given producer fact. */
-  disconnectOrganization(organizationId: string, factId: string): Promise<void>;
+  /** Atomically fences authorized subscriptions to one changed resource. */
+  invalidateScope(
+    organizationId: string,
+    resource: 'space' | 'list' | 'task',
+    resourceId: string,
+    factId: string,
+  ): Promise<void>;
 
   /** Invalidates subscriptions to the affected task while preserving other rooms. */
   invalidateTaskRoom(

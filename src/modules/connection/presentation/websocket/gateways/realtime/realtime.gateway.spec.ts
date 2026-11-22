@@ -80,7 +80,9 @@ describe('RealtimeGateway', () => {
         RealtimeGateway,
         {
           provide: CheckConnection,
-          useValue: new CheckConnection(adapters?.identity, adapters?.registry),
+          useValue: new CheckConnection(adapters?.identity, adapters?.registry, {
+            matches: () => Promise.resolve(true),
+          }),
         },
         { provide: ChangeRoom, useValue: new ChangeRoom(adapters?.access, adapters?.registry) },
         { provide: TrackSocketPresence, useValue: adapters?.presence ?? {} },
@@ -231,6 +233,7 @@ describe('RealtimeGateway', () => {
       '7',
       task,
       `task:${taskId}`,
+      { organizationId, listId, spaceId, taskId, taskKey: task.taskKey },
     );
     await expect(client.emitWithAck('room:leave', task)).resolves.toEqual({ ok: true });
     await expect(client.emitWithAck('room:leave', task)).resolves.toEqual({ ok: true });
@@ -291,7 +294,7 @@ describe('RealtimeGateway', () => {
     expect(adapters.registry.join).not.toHaveBeenCalled();
   });
 
-  it('closes a socket when its room fence changed after Task checked access', async () => {
+  it('keeps an authorized socket open when a different visibility change interrupts a join', async () => {
     const adapters = adapterFixtures();
     adapters.registry.join.mockResolvedValueOnce(null);
     const client = await connectClient(adapters);
@@ -299,10 +302,12 @@ describe('RealtimeGateway', () => {
     client.connect();
     await ready;
 
-    const invalidated = closed(client);
-    client.emit('room:join', { kind: 'list', listId });
-    await expect(invalidated).resolves.toBe('io server disconnect');
+    await expect(client.emitWithAck('room:join', { kind: 'list', listId })).resolves.toEqual({
+      ok: false,
+      code: 'realtime.unavailable',
+    });
     expect(adapters.registry.join).toHaveBeenCalledOnce();
+    expect(client.connected).toBe(true);
   });
 
   it('keeps the socket available after a failed Task check that did not join a room', async () => {
@@ -328,7 +333,7 @@ describe('RealtimeGateway', () => {
       .mockResolvedValueOnce('7')
       .mockResolvedValueOnce('7')
       .mockResolvedValueOnce('7')
-      .mockResolvedValueOnce('8');
+      .mockResolvedValueOnce(null);
     const client = await connectClient(adapters);
     const ready = hello(client);
     client.connect();

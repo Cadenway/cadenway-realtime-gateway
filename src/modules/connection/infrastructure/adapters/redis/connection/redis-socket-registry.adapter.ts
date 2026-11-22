@@ -9,12 +9,14 @@ import {
   socketRegistryPrefix,
 } from '../../../../../../infrastructure/redis/realtime-socket-authority.js';
 import type { RealtimeRoom } from '../../../../application/models/connection/realtime-room.model.js';
+import type { ConnectionRoomProof } from '../../../../application/models/connection/connection-room-proof.model.js';
 import type { RealtimeSession } from '../../../../application/models/connection/realtime-session.model.js';
 import type { RoomSelection } from '../../../../application/models/connection/room-selection.model.js';
 import type { SocketRegistryJoin } from '../../../../application/models/connection/socket-registry-join.model.js';
 import type { SocketRegistryPort } from '../../../../application/ports/outbound/redis/connection/socket-registry.port.js';
 import {
   invalidateOrganizationLeasesScript,
+  invalidateScopeScript,
   markSocketInvalidationScript,
   socketRegistryScript,
   socketRoomLimitReply,
@@ -42,6 +44,11 @@ const markerScriptDigest = createHash('sha1').update(markSocketInvalidationScrip
 const organizationLeaseDigest = createHash('sha1')
   .update(invalidateOrganizationLeasesScript)
   .digest('hex');
+const scopeDigest = createHash('sha1').update(invalidateScopeScript).digest('hex');
+
+function scopePrefix(organizationId: string): string {
+  return `${socketRegistryPrefix}scope:${encodeURIComponent(organizationId.toLowerCase())}:`;
+}
 
 function visibilityKey(organizationId: string): string {
   return `${socketRegistryPrefix}visibility:${encodeURIComponent(organizationId.toLowerCase())}`;
@@ -105,12 +112,22 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     fence: string,
     selection: RoomSelection,
     room: RealtimeRoom,
+    placement?: ConnectionRoomProof,
   ): Promise<SocketRegistryJoin> {
     if (selection.kind === 'organization' && room !== `org:${session.organizationId}`) return null;
     if (selection.kind === 'list' && room !== `list:${selection.listId}`) return null;
     if (selection.kind === 'task' && !room.startsWith('task:')) return null;
 
-    const reply = await this.socket(socketId, session, 'join', selectorOf(selection), room, fence);
+    const reply = await this.socket(
+      socketId,
+      session,
+      'join',
+      selectorOf(selection),
+      room,
+      fence,
+      '',
+      placement,
+    );
     if (reply === null) return null;
     if (reply === socketRoomLimitReply) return { kind: 'room-limit' };
     return { kind: 'joined', previousRoom: decodeRoom(reply) };
@@ -223,6 +240,22 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     );
   }
 
+  /** Advances the generation for just one resource and fences stale in-flight proof reads. */
+  public async invalidateScope(
+    organizationId: string,
+    kind: 'space' | 'list' | 'task',
+    scopeId: string,
+    factId: string,
+  ): Promise<void> {
+    const prefix = scopePrefix(organizationId);
+    await this.run(
+      invalidateScopeScript,
+      scopeDigest,
+      [visibilityKey(organizationId), `${prefix}${kind}:${scopeId}`, `${prefix}fact:${factId}`],
+      [],
+    );
+  }
+
   private socket(
     socketId: string,
     session: RealtimeSession,
@@ -231,6 +264,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     room = '',
     fence = '',
     delivery = '',
+    placement?: ConnectionRoomProof,
   ): Promise<unknown> {
     // ioredis may resend a command when the connection drops before its reply.
     const requestId =
@@ -249,6 +283,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
         membershipKey(session.organizationId, session.memberId),
         visibilityKey(session.organizationId),
         organizationLeaseKey(session.organizationId),
+        scopePrefix(session.organizationId),
       ],
       [
         operation,
@@ -262,6 +297,8 @@ export class RedisSocketRegistry implements SocketRegistryPort {
         requestId,
         operation === 'register' ? this.deliveryChannel : '',
         delivery,
+        placement?.spaceId ?? '',
+        placement?.listId ?? '',
       ],
     );
   }

@@ -8,11 +8,13 @@ import type { Redis } from 'ioredis';
 import type { Server, ServerOptions, Socket } from 'socket.io';
 
 import type { RealtimeAdmissionGates } from './realtime-admission-gates.js';
+import { RedisRealtimeAdmission } from './redis-realtime-admission.js';
 import { RedisSubscriptionRecovery } from './redis-subscription-recovery.js';
 
 const refusedOrigin = 'Origin not allowed';
 const unavailable = 'Realtime unavailable';
 const lostEvents = ['close', 'reconnecting', 'end'] as const;
+const maximumTransports = 1_024;
 
 /** Combines Redis fan-out readiness for the servers owned by one application. */
 export class SocketIoRedisReadiness {
@@ -45,6 +47,9 @@ export class RedisIoAdapter extends IoAdapter {
   /** Exact browser origins for both transports. */
   private readonly allowedOrigins: ReadonlySet<string>;
 
+  /** Shared cluster admission backed by the same command connection as the transport. */
+  private readonly admission: RedisRealtimeAdmission;
+
   /** Disposal callbacks for the servers created by Nest. */
   private readonly disposeClients: (() => Promise<void>)[] = [];
   // #endregion
@@ -60,6 +65,7 @@ export class RedisIoAdapter extends IoAdapter {
   ) {
     super(app);
     this.allowedOrigins = new Set(allowedOrigins);
+    this.admission = new RedisRealtimeAdmission(redis);
   }
   // #endregion
 
@@ -73,18 +79,32 @@ export class RedisIoAdapter extends IoAdapter {
       ...options,
       serveClient: false,
       connectionStateRecovery: undefined,
+      connectTimeout: 15_000,
+      maxHttpBufferSize: 8_192,
       cors: { origin: [...this.allowedOrigins], credentials: true },
       allowRequest: (request, callback) => {
         if (!this.isAllowedOrigin(request.headers.origin)) {
           callback(refusedOrigin, false);
           return;
         }
-        if (!available()) {
+        if (!available() || transports.size >= maximumTransports) {
           callback(unavailable, false);
           return;
         }
-        admissions.set(request, epoch);
-        callback(null, true);
+        const admittedEpoch = epoch;
+        void this.admission.allow(request).then(
+          (allowed) => {
+            if (!allowed || admittedEpoch !== epoch || !available()) {
+              callback(unavailable, false);
+              return;
+            }
+            admissions.set(request, admittedEpoch);
+            callback(null, true);
+          },
+          () => {
+            callback(unavailable, false);
+          },
+        );
       },
     };
     // Nest types these options as complete although Socket.IO supplies the remaining defaults.
@@ -100,7 +120,7 @@ export class RedisIoAdapter extends IoAdapter {
 
     server.adapter(createAdapter(fanOut.publisher, fanOut.subscriber));
     server.engine.on('connection', (transport: Socket['conn']) => {
-      if (!isCurrent(transport.request)) {
+      if (!isCurrent(transport.request) || transports.size >= maximumTransports) {
         transport.close(true);
         return;
       }

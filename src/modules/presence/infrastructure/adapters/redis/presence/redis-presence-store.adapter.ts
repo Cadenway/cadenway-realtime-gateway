@@ -17,6 +17,8 @@ import type { PresenceStore } from '../../../../application/ports/outbound/redis
 const dueKey = 'realtime:presence:due';
 const leaseMs = 90_000;
 const retentionMs = 86_400_000;
+const statusChangeCooldownMs = 1_000;
+const statusOrganizationLimit = 24;
 const identifier = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 type PresenceUpdate =
@@ -50,6 +52,21 @@ if action == 'connect' or action == 'heartbeat' or action == 'set' then
 end
 
 local previous = redis.call('HGET', KEYS[2], 'visible') or 'offline'
+if action == 'set' then
+  local leaseExpiry = tonumber(redis.call('ZSCORE', KEYS[1], socket) or '0')
+  if leaseExpiry <= now then return 0 end
+  local preference = redis.call('HGET', KEYS[2], 'preference') or 'online'
+  if preference ~= status then
+    local changedAt = tonumber(redis.call('HGET', KEYS[2], 'changedAt') or '0')
+    if now - changedAt < ${String(statusChangeCooldownMs)} then return 2 end
+    local usage = tonumber(redis.call('GET', KEYS[8]) or '0')
+    if usage >= ${String(statusOrganizationLimit)} then return 2 end
+    if redis.call('INCR', KEYS[8]) == 1 then
+      redis.call('PEXPIRE', KEYS[8], ${String(statusChangeCooldownMs)})
+    end
+    redis.call('HSET', KEYS[2], 'changedAt', now)
+  end
+end
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 local active = redis.call('ZSCORE', KEYS[1], socket)
 local accepted = 1
@@ -93,17 +110,17 @@ export class RedisPresenceStore implements PresenceStore {
 
   // #region Methods
   /** Creates an expiring lease for an authorized connection. */
-  public connect(connection: PresenceConnection): Promise<boolean> {
-    return this.update({ action: 'connect', connection });
+  public async connect(connection: PresenceConnection): Promise<boolean> {
+    return (await this.update({ action: 'connect', connection })) === true;
   }
 
   /** Refreshes an existing live lease. */
-  public heartbeat(connection: PresenceConnection): Promise<boolean> {
-    return this.update({ action: 'heartbeat', connection });
+  public async heartbeat(connection: PresenceConnection): Promise<boolean> {
+    return (await this.update({ action: 'heartbeat', connection })) === true;
   }
 
   /** Sets the shared preference from a live connection. */
-  public set(connection: PresenceConnection, status: PresenceStatus): Promise<boolean> {
+  public set(connection: PresenceConnection, status: PresenceStatus): Promise<boolean | 'limited'> {
     return this.update({ action: 'set', connection, status });
   }
 
@@ -132,7 +149,7 @@ export class RedisPresenceStore implements PresenceStore {
   }
 
   /** Validates socket authority and publishes any resulting transition in the same script. */
-  private async update(update: PresenceUpdate): Promise<boolean> {
+  private async update(update: PresenceUpdate): Promise<boolean | 'limited'> {
     const { action, connection } = update;
     const organizationId = connection.organizationId.toLowerCase();
     const memberId = connection.memberId.toLowerCase();
@@ -151,7 +168,7 @@ export class RedisPresenceStore implements PresenceStore {
     const base = `realtime:presence:${organizationId}:${memberId}`;
     const result = await this.redis.eval(
       updateScript,
-      authority === undefined ? 3 : 7,
+      authority === undefined ? 3 : 8,
       `${base}:sockets`,
       `${base}:state`,
       dueKey,
@@ -162,6 +179,7 @@ export class RedisPresenceStore implements PresenceStore {
             sessionKey(authority.sessionId),
             membershipKey(organizationId, memberId),
             organizationLeaseKey(organizationId),
+            `realtime:presence:status-admission:${organizationId}`,
           ]),
       action,
       connection.socketId,
@@ -178,7 +196,7 @@ export class RedisPresenceStore implements PresenceStore {
         ? []
         : [socketIdentityFingerprint(authority), authority.sessionVersion, authority.role]),
     );
-    return result === 1;
+    return result === 2 ? 'limited' : result === 1;
   }
   // #endregion
 }

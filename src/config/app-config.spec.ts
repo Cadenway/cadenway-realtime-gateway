@@ -43,6 +43,7 @@ function validEnvironment(overrides: Record<string, string> = {}): Record<string
     INTERNAL_TOKEN_ISSUER: 'realtime-gateway',
     INTERNAL_TOKEN_PRIVATE_JWK: privateJwk(),
     IDENTITY_SERVICE_URL: 'http://localhost:3010',
+    ORGANIZATION_SERVICE_URL: 'http://localhost:3011',
     TASK_SERVICE_URL: 'http://localhost:3013',
     NATS_URL: 'nats://localhost:4222',
     NATS_USER: 'realtime-gateway',
@@ -157,6 +158,7 @@ describe('appConfigSchema', () => {
       'ALLOWED_ORIGINS',
       'IDENTITY_SERVICE_URL',
       'TASK_SERVICE_URL',
+      'ORGANIZATION_SERVICE_URL',
     ]);
   });
 

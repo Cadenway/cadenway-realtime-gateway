@@ -8,6 +8,11 @@ passes it to Identity once. A successful redemption supplies the fixed account, 
 organization, session version, and deadline for that socket. The socket rejoins through the full
 handshake on every reconnection, without message replay.
 
+Before creating a transport, Redis admits at most 24 attempts per source network and 240 per
+cluster in a 10-second window. The private listener relies on Traefik as its sole proxy hop.
+Each replica limits in-flight Redis admissions, ticket checks and open transports. Clients that
+do not open a namespace in 15 seconds are closed. Incoming packets are limited to 8 KiB.
+
 The gateway registers the verified organization and personal subscriptions, then rechecks the
 registration before sending `connection.ready.v1`. It closes at the Identity deadline and removes
 the registration on disconnect. Task and list subscriptions use strictly validated selectors. Task
@@ -52,8 +57,9 @@ slot, and leaving frees one. An authorized request for a new selection at capaci
 - Admission needs the acknowledged private route. A connection checks its lease periodically, so
   a dropped cross-instance close hint cannot keep a revoked socket connected beyond the recheck.
   Bound local checks close affected sockets if Redis cannot resolve their lease within the deadline.
-  Broad organization invalidations advance the organization lease and visibility epochs together.
-  Redis deduplicates each producer fact, so its replay cannot close a more recent connection.
+  Scope invalidations advance the visibility epoch and write only the changed resource's fence.
+  Each resource-room registration records its authorized space and list. Redis deduplicates each
+  producer fact, so its replay cannot close a more recent connection.
 
 ## Public entry points
 

@@ -72,6 +72,7 @@ class TestRedis extends EventEmitter {
   public channels = vi.fn<(...channels: string[]) => Promise<number>>().mockResolvedValue(3);
   public patterns = vi.fn<(...patterns: string[]) => Promise<number>>().mockResolvedValue(1);
   public publish = vi.fn<(channel: string, data: Buffer) => Promise<number>>().mockResolvedValue(1);
+  public eval = vi.fn<Redis['eval']>().mockResolvedValue(1);
   public unsubscribe = vi.fn<(...channels: string[]) => Promise<number>>().mockResolvedValue(0);
   public punsubscribe = vi.fn<(pattern: string) => Promise<number>>().mockResolvedValue(0);
   public shutDown = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
@@ -241,6 +242,22 @@ describe('RedisIoAdapter connection lifecycle', () => {
     patternAck.resolve(1);
     await waitForReady(readiness);
     await request(url).get(polling).set('Origin', origin).expect(200);
+  });
+
+  it('does not open a polling transport when its shared admission budget is exhausted', async () => {
+    const { command, publisher, subscriber, readiness, server, url } = await fixture();
+    command.transition('ready');
+    publisher.transition('ready');
+    subscriber.transition('ready');
+    await waitForReady(readiness);
+    command.eval.mockResolvedValueOnce(0);
+    await request(url).get(polling).set('Origin', origin).expect(403, {
+      code: 4,
+      message: 'Realtime unavailable',
+    });
+    expect(server.engine.clientsCount).toBe(0);
+    await request(url).get(polling).set('Origin', origin).expect(200);
+    expect(server.engine.clientsCount).toBe(1);
   });
 
   it.each(['command', 'publisher', 'subscriber'] as const)(

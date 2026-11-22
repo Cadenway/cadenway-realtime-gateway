@@ -36,8 +36,8 @@ broker grants the realtime identity access to their durable consumers.
 - Each candidate socket is scoped to the producer organization and checked against a live session,
   a current Task visibility proof, matching task placement and an unchanged Redis fence.
 - Task updates reach task and list subscribers once per socket. Comments reach task subscribers.
-- Space and list visibility changes advance the tenant fence before closing affected organization
-  sockets. A new connection obtains a fresh Identity ticket.
+- Space, list and task placement changes advance the tenant visibility fence to reject in-flight
+  proofs. Only sockets with an older subscription to the changed resource need to reconnect.
 - Task trash and purge advance the tenant visibility fence and reconcile only the affected task
   subscriptions. A delayed trash fact keeps restored task subscriptions with current Task proof.
 - A delayed fact whose task has moved is omitted without removing a still-authorized subscription.
@@ -58,6 +58,7 @@ operations. JetStream redelivery can repeat an invalidation. Browsers deduplicat
 
 ## Decisions
 
-Space and list changes close tenant connections until a narrower reconciliation index is available.
-For task placement changes, Task's current proof must match the producer's space and list.
+Resource fences use the space and list returned by Task at subscription time. A move invalidates
+the task subscription so the next join records its current placement. Task's current proof must
+still match the producer's space and list before a relay is delivered.
 Connection currently enumerates the full cluster room before the relay processes these batches.

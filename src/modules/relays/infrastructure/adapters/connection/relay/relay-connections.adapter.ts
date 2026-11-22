@@ -97,14 +97,14 @@ export class RelayConnectionsAdapter implements TaskRelayPort, RelayInvalidation
     return this.connections.changeMemberRole(organizationId, memberId, version, role);
   }
 
-  /** Advances the organization visibility fence. */
-  public advanceVisibility(organizationId: string): Promise<void> {
-    return this.connections.advanceVisibility(organizationId);
-  }
-
-  /** Fences tenant sockets once per producer fact. */
-  public disconnectOrganization(organizationId: string, factId: string): Promise<void> {
-    return this.connections.disconnectOrganization(organizationId, factId);
+  /** Applies only the fence of the affected list, space or task. */
+  public invalidateScope(
+    organizationId: string,
+    resource: 'space' | 'list' | 'task',
+    resourceId: string,
+    factId: string,
+  ): Promise<void> {
+    return this.connections.invalidateScope(organizationId, resource, resourceId, factId);
   }
 
   /** Reconciles only the affected task room through the Connection capability. */

@@ -10,6 +10,7 @@ import {
   COMMENT_CREATED_V1,
   eventSchemas,
   GIT_PR_OPENED_V1,
+  LIST_ACCESS_CHANGED_V1,
   SESSION_REVOKED_V1,
   TASK_STATUS_CHANGED_V1,
   TASK_UPDATED_V1,
@@ -300,6 +301,7 @@ function testEnvironment(
     INTERNAL_TOKEN_ISSUER: 'realtime-gateway',
     INTERNAL_TOKEN_PRIVATE_JWK: privateJwk,
     IDENTITY_SERVICE_URL: 'http://127.0.0.1:1',
+    ORGANIZATION_SERVICE_URL: 'http://127.0.0.1:1',
     TASK_SERVICE_URL: 'http://127.0.0.1:1',
     NATS_URL: natsUrl,
     NATS_USER,
@@ -866,6 +868,7 @@ describe('realtime relay across two instances', () => {
     upstream = await RealtimeUpstreams.start(env.INTERNAL_TOKEN_PRIVATE_JWK ?? '');
     cleanup.push(() => upstream.close());
     env.IDENTITY_SERVICE_URL = upstream.url;
+    env.ORGANIZATION_SERVICE_URL = upstream.url;
     env.TASK_SERVICE_URL = upstream.url;
     env.REALTIME_GIT_RELAYS_ENABLED = 'true';
     for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
@@ -1178,6 +1181,71 @@ describe('realtime relay across two instances', () => {
     expect(received).toHaveLength(1);
     expect(foreign).toEqual([]);
   }, 40_000);
+
+  it('keeps a same-tenant connection without a subscription to the changed list live', async () => {
+    const subscriberId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b54';
+    const observerId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b55';
+    const subscriberTicket = 's'.repeat(43);
+    const observerTicket = 't'.repeat(43);
+    upstream.issue(subscriberTicket, session(subscriberId, organizationId), true);
+    upstream.issue(observerTicket, session(observerId, organizationId), true);
+    const [subscriber, observer] = await Promise.all([
+      connect(first.url, subscriberTicket),
+      connect(second.url, observerTicket),
+    ]);
+    expect(await join(subscriber)).toEqual({ ok: true });
+
+    const publisher = publisherContext.get(EventPublisher);
+    await publisher.publish(eventSchemas, LIST_ACCESS_CHANGED_V1, {
+      organizationId,
+      actor: { type: 'user', id: subscriberId },
+      version: 2,
+      listId,
+      spaceId,
+      organizationAccess: false,
+      grants: [],
+      changed: ['organizationAccess'],
+      changedUserIds: [],
+    });
+    await vi.waitFor(
+      () => {
+        expect(subscriber.connected).toBe(false);
+      },
+      { interval: 250, timeout: 10_000 },
+    );
+    expect(observer.connected).toBe(true);
+    await expect(observer.timeout(2_000).emitWithAck('presence:heartbeat', {})).resolves.toEqual({
+      ok: true,
+    });
+    observer.disconnect();
+  });
+
+  it('closes an existing socket after loss of its SAML source membership without a broker event', async () => {
+    const userId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b52';
+    const token = 'u'.repeat(43);
+    upstream.issue(
+      token,
+      {
+        ...session(userId, organizationId),
+        samlSourceMembership: {
+          organizationId: otherOrganizationId,
+          memberId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b53',
+        },
+      },
+      true,
+    );
+    const connected = await connect(first.url, token);
+    upstream.revokeMembership(otherOrganizationId, userId);
+    await vi.waitFor(
+      () => {
+        expect(connected.connected).toBe(false);
+      },
+      {
+        interval: 250,
+        timeout: 23_000,
+      },
+    );
+  }, 30_000);
 
   it('publishes offline when the last presence lease expires', async () => {
     const observerId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b35';

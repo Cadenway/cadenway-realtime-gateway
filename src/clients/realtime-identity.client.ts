@@ -9,10 +9,14 @@ import {
 } from '@cadenway/nest-common';
 
 import { bindInternalFetch, readInternalJson } from '../infrastructure/http/internal-json.js';
+import { samlSourceMembershipSchema } from '../infrastructure/http/saml-source-membership.schema.js';
 import { getIdentityServiceInternalRoutes } from './generated/identity-service.js';
 
 const unavailable = 'Identity ticket redemption is unavailable.';
-const realtimeSession = RedeemRealtimeTicketInternalResponse.strict();
+const realtimeSession = RedeemRealtimeTicketInternalResponse.strict().extend({
+  samlSourceMembership: samlSourceMembershipSchema.optional(),
+});
+const sourceMembershipPreference = 'cadenway-saml-source-membership';
 
 /** The verified Identity session and its effective lease in epoch milliseconds. */
 export interface RedeemedRealtimeSession {
@@ -26,6 +30,7 @@ export interface RedeemedRealtimeSession {
   readonly organizationId: string;
   readonly memberId: string;
   readonly role: 'owner' | 'admin' | 'member' | 'guest';
+  readonly samlSourceMembership?: { readonly organizationId: string; readonly memberId: string };
 
   /** The earlier of the absolute and inactivity expiration instants. */
   readonly expiresAt: number;
@@ -56,6 +61,7 @@ export class RealtimeIdentityClient {
       claims: { organizationId: null, actor: { type: 'system', id: null } },
       idempotent: false,
       streamTimeoutMs: MAX_CALL_TIMEOUT_MS,
+      headers: { Prefer: sourceMembershipPreference },
     };
     const response = await readInternalJson(
       this.routes.redeemRealtimeTicketInternal(body.data, options),
@@ -66,12 +72,21 @@ export class RealtimeIdentityClient {
     const session = realtimeSession.safeParse(response.data);
     if (
       !session.success ||
-      response.headers.get('cache-control')?.trim().toLowerCase() !== 'no-store'
+      response.headers.get('cache-control')?.trim().toLowerCase() !== 'no-store' ||
+      response.headers.get('preference-applied') !== sourceMembershipPreference
     ) {
       throw new Error(unavailable);
     }
-    const { sessionId, sessionVersion, userId, organizationId, memberId, role, sessionExpiresAt } =
-      session.data;
+    const {
+      sessionId,
+      sessionVersion,
+      userId,
+      organizationId,
+      memberId,
+      role,
+      sessionExpiresAt,
+      samlSourceMembership,
+    } = session.data;
     const expiresAt = Date.parse(sessionExpiresAt);
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return null;
     return {
@@ -82,6 +97,14 @@ export class RealtimeIdentityClient {
       memberId: memberId.toLowerCase(),
       role,
       expiresAt,
+      ...(samlSourceMembership === undefined
+        ? {}
+        : {
+            samlSourceMembership: {
+              organizationId: samlSourceMembership.organizationId.toLowerCase(),
+              memberId: samlSourceMembership.memberId.toLowerCase(),
+            },
+          }),
     };
   }
   // #endregion

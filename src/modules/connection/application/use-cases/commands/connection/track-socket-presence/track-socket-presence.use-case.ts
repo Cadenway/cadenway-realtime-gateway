@@ -25,7 +25,7 @@ export class TrackSocketPresence {
     socketId: string,
     session: RealtimeSession,
     status: SocketPresenceStatus,
-  ): Promise<boolean> {
+  ): Promise<boolean | 'limited'> {
     return this.presence.set(socketId, session, status);
   }
 
