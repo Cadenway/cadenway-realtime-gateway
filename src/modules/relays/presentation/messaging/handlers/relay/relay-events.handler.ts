@@ -170,7 +170,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       event: SPACE_UPDATED_V1,
       handle: (fact, { signal }) =>
         fact.changed.some((field) => field === 'visibility' || field === 'ownerUserId')
-          ? this.invalidateOrganization(fact.organizationId, fact.id, signal)
+          ? this.invalidateScope(fact, 'space', fact.spaceId, signal)
           : Promise.resolve(),
     });
     await this.consumers.subscribe({
@@ -178,40 +178,35 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SPACE_ACCESS_CHANGED_V1,
-      handle: (fact, { signal }) =>
-        this.invalidateOrganization(fact.organizationId, fact.id, signal),
+      handle: (fact, { signal }) => this.invalidateScope(fact, 'space', fact.spaceId, signal),
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.spaceAccessRepublished,
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SPACE_ACCESS_REPUBLISHED_V1,
-      handle: (fact, { signal }) =>
-        this.invalidateOrganization(fact.organizationId, fact.id, signal),
+      handle: (fact, { signal }) => this.invalidateScope(fact, 'space', fact.spaceId, signal),
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.spaceDeleted,
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: SPACE_DELETED_V1,
-      handle: (fact, { signal }) =>
-        this.invalidateOrganization(fact.organizationId, fact.id, signal),
+      handle: (fact, { signal }) => this.invalidateScope(fact, 'space', fact.spaceId, signal),
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.listAccessChanged,
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: LIST_ACCESS_CHANGED_V1,
-      handle: (fact, { signal }) =>
-        this.invalidateOrganization(fact.organizationId, fact.id, signal),
+      handle: (fact, { signal }) => this.invalidateScope(fact, 'list', fact.listId, signal),
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.listDeleted,
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: LIST_DELETED_V1,
-      handle: (fact, { signal }) =>
-        this.invalidateOrganization(fact.organizationId, fact.id, signal),
+      handle: (fact, { signal }) => this.invalidateScope(fact, 'list', fact.listId, signal),
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.taskTrashed,
@@ -253,10 +248,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       handle: async (fact, { signal }) => {
         signal.throwIfAborted();
         if (fact.changed.some((field) => ['listId', 'spaceId', 'parentKey'].includes(field))) {
-          await this.invalidation.execute(
-            { kind: 'visibility', organizationId: fact.organizationId.toLowerCase() },
-            signal,
-          );
+          await this.invalidateScope(fact, 'task', fact.key, signal);
         }
         await this.changes.execute(
           taskFact(TASK_UPDATED_V1, fact, { changed: fact.changed }),
@@ -320,16 +312,19 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     }
   }
 
-  private async invalidateOrganization(
-    organizationId: string,
-    factId: string,
+  private async invalidateScope(
+    fact: { readonly organizationId: string; readonly id: string },
+    resource: 'space' | 'list' | 'task',
+    resourceId: string,
     signal: AbortSignal,
   ): Promise<void> {
     await this.invalidation.execute(
       {
-        kind: 'organization',
-        organizationId: organizationId.toLowerCase(),
-        factId: factId.toLowerCase(),
+        kind: 'visibility',
+        organizationId: fact.organizationId.toLowerCase(),
+        resource,
+        resourceId: resource === 'task' ? resourceId : resourceId.toLowerCase(),
+        factId: fact.id.toLowerCase(),
       },
       signal,
     );

@@ -22,6 +22,7 @@ function internalRoutes(service: string, operationIds: string[]) {
 
 export default defineConfig({
   'identity-service': internalRoutes('identity-service', ['redeemRealtimeTicketInternal']),
+  'organization-service': internalRoutes('organization-service', ['getSearchMembershipInternal']),
   'task-service': internalRoutes('task-service', [
     'checkListAccessInternal',
     'checkTaskAccessInternal',

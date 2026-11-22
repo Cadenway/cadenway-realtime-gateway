@@ -21,6 +21,12 @@ reconcile the visible state in the same script as the publication. Member state 
 day after its last lease so an expiry worker can report offline after a short outage. Transitions
 use Redis pub/sub and are therefore transient. Clients must refresh presence on reconnect.
 
+A socket can issue one presence operation at a time. Heartbeats are spaced by at least five
+seconds. Explicit status changes are spaced by a second per membership, across sockets and
+replicas, with a budget of 24 changes per tenant per second. Redis checks that budget before
+updating the preference. Each replica bounds the number of simultaneous presence operations and
+fan-out deliveries. A busy operation returns `realtime.unavailable` without closing the socket.
+
 ## Public entry points
 
 | Entry point                       | Consumers  |

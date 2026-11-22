@@ -8,6 +8,11 @@ passes it to Identity once. A successful redemption supplies the fixed account, 
 organization, session version, and deadline for that socket. The socket rejoins through the full
 handshake on every reconnection, without message replay.
 
+Before creating a transport, Redis admits at most 24 attempts per source network and 240 per
+cluster in a 10-second window. The private listener relies on Traefik as its sole proxy hop.
+Each replica limits in-flight Redis admissions, ticket checks and open transports. Clients that
+do not open a namespace in 15 seconds are closed. Incoming packets are limited to 8 KiB.
+
 The gateway registers the verified organization and personal subscriptions, then rechecks the
 registration before sending `connection.ready.v1`. It closes at the Identity deadline and removes
 the registration on disconnect. Task and list subscriptions use strictly validated selectors. Task
@@ -43,11 +48,18 @@ slot, and leaving frees one. An authorized request for a new selection at capaci
   and recipient lookup across instances. The task-key index is written only after a stable Task UUID
   has been authorized. Redis verifies the exact lease, epoch and room while publishing a short-lived
   handoff to its owning replica. Only that replica rechecks the lease and emits to its own socket.
+- Each replica admits up to 128 concurrent owner handoffs. At capacity it drops incoming handoffs
+  without queueing and increments the OpenTelemetry counter
+  `cadenway.realtime.relay.handoff.dropped` with no metric attributes. It exports this counter
+  through the configured OTLP pipeline. The counter only measures drops observed by the inbox.
+  Existing connections remain open and Redis Pub/Sub provides no replay. A client needs an
+  independent API resynchronization path to recover a change it missed while connected.
 - Admission needs the acknowledged private route. A connection checks its lease periodically, so
   a dropped cross-instance close hint cannot keep a revoked socket connected beyond the recheck.
   Bound local checks close affected sockets if Redis cannot resolve their lease within the deadline.
-  Broad organization invalidations advance the organization lease and visibility epochs together.
-  Redis deduplicates each producer fact, so its replay cannot close a more recent connection.
+  Scope invalidations advance the visibility epoch and write only the changed resource's fence.
+  Each resource-room registration records its authorized space and list. Redis deduplicates each
+  producer fact, so its replay cannot close a more recent connection.
 
 ## Public entry points
 

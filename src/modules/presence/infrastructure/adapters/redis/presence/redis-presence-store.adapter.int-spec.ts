@@ -112,6 +112,7 @@ describe('Redis presence leases', () => {
     expect(await store.connect(second)).toBe(true);
     expect(await store.connect(other)).toBe(true);
     expect(await store.set(first, 'invisible')).toBe(true);
+    expect(await store.set(second, 'away')).toBe('limited');
     expect(await store.heartbeat(second)).toBe(true);
     await store.disconnect(first);
     await store.disconnect(second);

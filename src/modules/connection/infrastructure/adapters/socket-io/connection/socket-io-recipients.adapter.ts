@@ -1,6 +1,7 @@
 import type { Server, Socket } from 'socket.io';
 import { z } from 'zod';
 
+import { samlSourceMembershipSchema } from '../../../../../../infrastructure/http/saml-source-membership.schema.js';
 import type { ConnectionRecipient } from '../../../../application/models/connection/connection-recipient.model.js';
 import type { RealtimeRoom } from '../../../../application/models/connection/realtime-room.model.js';
 import type { RealtimeSession } from '../../../../application/models/connection/realtime-session.model.js';
@@ -15,6 +16,7 @@ const sessionSchema = z.strictObject({
   memberId: z.uuid(),
   userId: z.uuid(),
   role: z.enum(['owner', 'admin', 'member', 'guest']),
+  samlSourceMembership: samlSourceMembershipSchema.optional(),
 });
 
 const projectionSchema = z.object({

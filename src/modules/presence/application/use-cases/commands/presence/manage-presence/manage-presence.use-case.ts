@@ -21,7 +21,7 @@ export class ManagePresence {
   }
 
   /** Applies a preference to the connection's authenticated membership. */
-  public set(connection: PresenceConnection, status: PresenceStatus): Promise<boolean> {
+  public set(connection: PresenceConnection, status: PresenceStatus): Promise<boolean | 'limited'> {
     return this.store.set(connection, status);
   }
 

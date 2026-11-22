@@ -1,5 +1,6 @@
 import { pubSubClientOptions, ResilientRedisClient } from '@cadenway/nest-common/redis';
 import type { OnApplicationShutdown } from '@nestjs/common';
+import { metrics } from '@opentelemetry/api';
 
 import type { RealtimeAdmissionGates } from '../../../../../../infrastructure/redis/realtime-admission-gates.js';
 import { RedisSubscriptionRecovery } from '../../../../../../infrastructure/redis/redis-subscription-recovery.js';
@@ -21,6 +22,14 @@ export class RedisRelayInbox implements OnApplicationShutdown {
 
   /** Bounds checks for waiting local transports under burst load. */
   private pending = 0;
+
+  /** Counts locally rejected handoffs without retaining or labeling the payload. */
+  private readonly droppedHandoffs = metrics
+    .getMeter('cadenway-realtime-gateway')
+    .createCounter('cadenway.realtime.relay.handoff.dropped', {
+      description: 'Private Redis relay handoffs dropped at local concurrency capacity.',
+      unit: '{handoff}',
+    });
 
   /** Availability watchers own transports that must close when the subscription is lost. */
   private readonly unavailableListeners = new Set<() => void>();
@@ -76,10 +85,13 @@ export class RedisRelayInbox implements OnApplicationShutdown {
     if (wasSubscribed) for (const listener of this.unavailableListeners) listener();
   };
 
-  /** An overflowing socket receives no old data; the browser refetches on reconnection. */
+  /** Drops and counts new handoffs at capacity while allowing active checks to finish. */
   private readonly onMessage = (channel: string, payload: string): void => {
-    if (!this.available || channel !== this.channel || this.pending >= maximumConcurrentHandoffs)
+    if (!this.available || channel !== this.channel) return;
+    if (this.pending >= maximumConcurrentHandoffs) {
+      this.droppedHandoffs.add(1);
       return;
+    }
     this.pending += 1;
     void this.receive(payload)
       .catch(() => undefined)

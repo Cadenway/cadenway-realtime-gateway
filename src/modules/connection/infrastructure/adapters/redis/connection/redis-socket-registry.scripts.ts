@@ -20,6 +20,7 @@ local session = KEYS[2]
 local member = KEYS[3]
 local visibility = KEYS[4]
 local organizationLease = KEYS[5]
+local scopePrefix = KEYS[6]
 local operation = ARGV[1]
 local identity = ARGV[2]
 local sessionVersion = tonumber(ARGV[3])
@@ -31,6 +32,8 @@ local expectedEpoch = ARGV[8]
 local requestId = ARGV[9]
 local deliveryChannel = ARGV[10]
 local encodedDelivery = ARGV[11]
+local spaceId = ARGV[12]
+local listId = ARGV[13]
 local limitReply = '${socketRoomLimitReply}'
 
 if operation == 'unregister' then
@@ -65,6 +68,27 @@ local resourceRooms = currentSocketRegistration(socket, identity, membershipVers
 if not resourceRooms then return false end
 
 local epoch = redis.call('GET', visibility) or '0'
+if resourceRooms > 0 and (operation == 'read' or operation == 'has' or operation == 'publish')
+  and redis.call('HGET', socket, 'checkedEpoch') ~= epoch then
+  -- At most 32 resource rooms can have placement fields. Cache a successful check until the
+  -- next visibility fact so ordinary delivery does not repeat the scan.
+  for _, field in ipairs(redis.call('HKEYS', socket)) do
+    if string.sub(field, 1, 10) == 'placement:' then
+      local joinedAt, joinedSpace, joinedList = string.match(redis.call('HGET', socket, field),
+        '^(%d+):([%w%-]+):([%w%-]+)$')
+      if not joinedAt then return false end
+      local keys = {scopePrefix .. 'space:' .. joinedSpace, scopePrefix .. 'list:' .. joinedList}
+      local resourceSelector = string.sub(field, 11)
+      if string.sub(resourceSelector, 1, 5) == 'task:' then
+        table.insert(keys, scopePrefix .. resourceSelector)
+      end
+      for _, changedAt in ipairs(redis.call('MGET', unpack(keys))) do
+        if changedAt and tonumber(changedAt) > tonumber(joinedAt) then return false end
+      end
+    end
+  end
+  redis.call('HSET', socket, 'checkedEpoch', epoch)
+end
 if operation == 'read' then return epoch end
 if operation == 'has' then
   return epoch == expectedEpoch and redis.call('HEXISTS', socket, 'room:' .. room) == 1
@@ -89,7 +113,7 @@ local previous = redis.call('HGET', socket, selectionField)
 local resource = selector ~= 'organization'
 if operation == 'leave' or operation == 'evict' then
   if previous then
-    redis.call('HDEL', socket, selectionField, 'room:' .. previous)
+    redis.call('HDEL', socket, selectionField, 'room:' .. previous, 'placement:' .. selector)
     if resource then resourceRooms = resourceRooms - 1 end
   end
   redis.call('HSET', socket, 'resourceRooms', resourceRooms, 'lastRequest', requestId,
@@ -111,6 +135,9 @@ end
 if previous and previous ~= room then redis.call('HDEL', socket, 'room:' .. previous) end
 redis.call('HSET', socket, selectionField, room, roomField, selectionField,
   'resourceRooms', resourceRooms, 'lastRequest', requestId, 'lastRoom', previous or '')
+if resource and spaceId ~= '' and listId ~= '' then
+  redis.call('HSET', socket, 'placement:' .. selector, epoch .. ':' .. spaceId .. ':' .. listId)
+end
 return previous or ''
 `;
 
@@ -135,6 +162,15 @@ export const invalidateOrganizationLeasesScript: string = `
 if redis.call('EXISTS', KEYS[3]) == 1 then return 0 end
 redis.call('INCR', KEYS[1])
 redis.call('INCR', KEYS[2])
+redis.call('PSETEX', KEYS[3], ${String(markerWindowMs)}, '1')
+return 1
+`;
+
+/** Records the resource's last change only once without revoking unrelated socket leases. */
+export const invalidateScopeScript: string = `
+if redis.call('EXISTS', KEYS[3]) == 1 then return 0 end
+redis.call('INCR', KEYS[1])
+redis.call('PSETEX', KEYS[2], ${String(markerWindowMs)}, redis.call('GET', KEYS[1]))
 redis.call('PSETEX', KEYS[3], ${String(markerWindowMs)}, '1')
 return 1
 `;

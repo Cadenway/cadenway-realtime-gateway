@@ -3,11 +3,25 @@ import { Module } from '@nestjs/common';
 
 import type { AppConfig } from '../config/app-config.js';
 import { RealtimeIdentityClient } from './realtime-identity.client.js';
+import { RealtimeOrganizationClient } from './realtime-organization.client.js';
 import { RealtimeTaskClient } from './realtime-task.client.js';
 
 /** Shares the signed transport and its circuit breaker for each Realtime dependency. */
 @Module({
   providers: [
+    {
+      provide: RealtimeOrganizationClient,
+      inject: [CONFIG, InternalTokenSigner],
+      useFactory: (config: AppConfig, signer: InternalTokenSigner): RealtimeOrganizationClient =>
+        new RealtimeOrganizationClient(
+          new InternalHttpClient({
+            service: 'organization-service',
+            baseUrl: config.ORGANIZATION_SERVICE_URL,
+            signer,
+            callTimeoutMs: 400,
+          }),
+        ),
+    },
     {
       provide: RealtimeIdentityClient,
       inject: [CONFIG, InternalTokenSigner],
@@ -33,6 +47,6 @@ import { RealtimeTaskClient } from './realtime-task.client.js';
         ),
     },
   ],
-  exports: [RealtimeIdentityClient, RealtimeTaskClient],
+  exports: [RealtimeIdentityClient, RealtimeOrganizationClient, RealtimeTaskClient],
 })
 export class RealtimeClientsModule {}

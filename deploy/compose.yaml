@@ -3,7 +3,7 @@
 # environments/<env>/services/realtime-gateway.yaml for the environment it deploys to.
 #
 # Exposed through Traefik on realtime.<domain> only: it joins `edge` (what Traefik serves) and
-# `internal` (Redis and the broker). No port is published; Traefik reaches the container on `edge`.
+# `internal` (Redis, the broker and services). No port is published.
 services:
   realtime-gateway:
     image: ghcr.io/${GHCR_OWNER}/cadenway-realtime-gateway:${REALTIME_GATEWAY_VERSION}
@@ -21,6 +21,7 @@ services:
       INTERNAL_TOKEN_ISSUER: realtime-gateway
       INTERNAL_TOKEN_PRIVATE_JWK: ${REALTIME_GATEWAY_INTERNAL_TOKEN_PRIVATE_JWK}
       IDENTITY_SERVICE_URL: ${IDENTITY_SERVICE_URL}
+      ORGANIZATION_SERVICE_URL: ${ORGANIZATION_SERVICE_URL:-http://organization-service:3011}
       TASK_SERVICE_URL: ${TASK_SERVICE_URL}
       # The broker, read by @cadenway/nest-messaging: readiness answers 503 while it does not answer.
       NATS_URL: ${NATS_URL}

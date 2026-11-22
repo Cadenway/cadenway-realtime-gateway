@@ -1,11 +1,14 @@
 import { ResilientRedisClient } from '@cadenway/nest-common/redis';
+import { metrics } from '@opentelemetry/api';
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { RealtimeAdmissionGates } from '../../../../../../infrastructure/redis/realtime-admission-gates.js';
 import type { RealtimeRoom } from '../../../../application/models/connection/realtime-room.model.js';
 import type { RealtimeSession } from '../../../../application/models/connection/realtime-session.model.js';
+import { RedisRelayInbox } from './redis-relay-inbox.adapter.js';
 import { RedisSocketRegistry } from './redis-socket-registry.adapter.js';
 
 /** Reads the Redis version used by the service in local development. */
@@ -300,6 +303,79 @@ describe('Redis socket registry across two gateway instances', () => {
     expect(captured).toHaveBeenCalledOnce();
   });
 
+  it('counts each dropped owner handoff at capacity and admits new handoffs when checks finish', async () => {
+    if (redis === undefined) throw new Error('Missing Redis fixture.');
+    const subscriberSource = new ResilientRedisClient(redis.getConnectionUrl(), {
+      enableOfflineQueue: false,
+      reportOutages: false,
+    });
+    clients.push(subscriberSource);
+    const session = verifiedSession();
+    const socketId = randomUUID();
+    const room = `task:${randomUUID()}` as const;
+    expect(await first.register(socketId, session)).toBe(true);
+    const fence = await currentEpoch(first, socketId, session);
+    await first.join(socketId, session, fence, { kind: 'task', taskKey: 'CAD-428' }, room);
+
+    let releaseChecks = (): void => {
+      throw new Error('The suspended checks did not initialize.');
+    };
+    const suspendedChecks = new Promise<void>((resolve) => {
+      releaseChecks = () => {
+        resolve();
+      };
+    });
+    const receive = vi.fn<(payload: string) => Promise<void>>(() => suspendedChecks);
+    const add = vi.fn<(value: number) => void>();
+    const meter = metrics.getMeter('cadenway-realtime-gateway');
+    const counter = vi.spyOn(meter, 'createCounter').mockReturnValue({ add });
+    const getMeter = vi.spyOn(metrics, 'getMeter').mockReturnValue(meter);
+    const unavailable = vi.fn();
+    let inbox: RedisRelayInbox | undefined;
+    try {
+      inbox = new RedisRelayInbox(
+        subscriberSource,
+        first.deliveryChannel,
+        receive,
+        new RealtimeAdmissionGates(),
+      );
+      inbox.onUnavailable(unavailable);
+      await vi.waitFor(() => {
+        expect(inbox?.available).toBe(true);
+      });
+      const packet = { type: 'task.updated.v1', data: { changed: ['status'] } };
+      const posted = await Promise.all(
+        Array.from({ length: 130 }, () => second.publish(socketId, session, fence, room, packet)),
+      );
+      expect(posted.every(Boolean)).toBe(true);
+      await vi.waitFor(() => {
+        expect(receive).toHaveBeenCalledTimes(128);
+        expect(add.mock.calls).toEqual([[1], [1]]);
+      });
+      expect(counter).toHaveBeenCalledExactlyOnceWith(
+        'cadenway.realtime.relay.handoff.dropped',
+        expect.objectContaining({ unit: '{handoff}' }),
+      );
+      expect(inbox.available).toBe(true);
+      expect(unavailable).not.toHaveBeenCalled();
+
+      const anotherTenant = { ...session, organizationId: randomUUID() };
+      expect(await second.publish(socketId, anotherTenant, fence, room, packet)).toBe(false);
+      releaseChecks();
+      expect(await second.publish(socketId, session, fence, room, packet)).toBe(true);
+      await vi.waitFor(() => {
+        expect(receive).toHaveBeenCalledTimes(129);
+      });
+      expect(add.mock.calls).toEqual([[1], [1]]);
+    } finally {
+      releaseChecks();
+      getMeter.mockRestore();
+      counter.mockRestore();
+      await inbox?.onApplicationShutdown();
+      await first.unregister(socketId, session);
+    }
+  });
+
   it('keeps a tenant close marker after a missed broadcast and allows only new tenant sockets', async () => {
     const session = verifiedSession();
     const socketId = randomUUID();
@@ -316,6 +392,51 @@ describe('Redis socket registry across two gateway instances', () => {
     expect(await first.register(freshSocket, session)).toBe(true);
     await first.invalidateOrganizationLeases(session.organizationId, factId);
     expect(await second.readFence(freshSocket, session)).toBe('1');
+  });
+
+  it('closes only subscriptions bound to a changed space, with deduplicated redelivery', async () => {
+    const session = verifiedSession();
+    const affected = randomUUID();
+    const unaffected = randomUUID();
+    const spaceId = randomUUID();
+    const otherSpaceId = randomUUID();
+    const listId = randomUUID();
+    const otherListId = randomUUID();
+    const task = { kind: 'task', taskKey: 'CAD-42' } as const;
+    const taskRoom = `task:${randomUUID()}` as const;
+    const otherList = { kind: 'list', listId: otherListId } as const;
+    const otherRoom = `list:${otherListId}` as const;
+    expect(await first.register(affected, session)).toBe(true);
+    expect(await first.register(unaffected, session)).toBe(true);
+    const fence = await currentEpoch(first, affected, session);
+    expect(
+      await first.join(affected, session, fence, task, taskRoom, { listId, spaceId }),
+    ).toMatchObject({ kind: 'joined' });
+    expect(
+      await first.join(unaffected, session, fence, otherList, otherRoom, {
+        spaceId: otherSpaceId,
+        listId: otherListId,
+      }),
+    ).toMatchObject({ kind: 'joined' });
+
+    const factId = randomUUID();
+    await second.invalidateScope(session.organizationId, 'space', spaceId, factId);
+    expect(await first.readFence(affected, session)).toBeNull();
+    const current = await currentEpoch(first, unaffected, session);
+    expect(current).not.toBe(fence);
+    expect(await first.hasSubscription(affected, session, current, taskRoom)).toBe(false);
+    expect(await first.hasSubscription(unaffected, session, current, otherRoom)).toBe(true);
+
+    const renewed = randomUUID();
+    expect(await first.register(renewed, session)).toBe(true);
+    expect(
+      await first.join(renewed, session, current, task, taskRoom, { listId, spaceId }),
+    ).toMatchObject({ kind: 'joined' });
+    await second.invalidateScope(session.organizationId, 'space', spaceId, factId);
+    expect(await first.readFence(renewed, session)).toBe(current);
+    await second.invalidateScope(session.organizationId, 'list', listId, randomUUID());
+    expect(await first.readFence(renewed, session)).toBeNull();
+    expect(await first.readFence(unaffected, session)).not.toBeNull();
   });
 
   it('allocates one shared slot across concurrent joins and frees it only once on leave', async () => {

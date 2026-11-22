@@ -181,6 +181,16 @@ export class ConnectionRecipients {
     return this.registry.invalidateOrganizationLeases(organizationId, factId);
   }
 
+  /** Applies one resource fence before any further delivery can use older authorization. */
+  public invalidateScope(
+    organizationId: string,
+    kind: 'space' | 'list' | 'task',
+    scopeId: string,
+    factId: string,
+  ): Promise<void> {
+    return this.registry.invalidateScope(organizationId, kind, scopeId, factId);
+  }
+
   private async reconcileTaskSelection(
     recipient: ConnectionRecipient,
     selection: Extract<RoomSelection, { kind: 'task' }>,

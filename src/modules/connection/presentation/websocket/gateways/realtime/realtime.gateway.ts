@@ -34,6 +34,9 @@ interface SocketConnection {
   readonly session: RealtimeSession;
   ready: boolean;
   changingRoom: boolean;
+  changingPresence: boolean;
+  nextHeartbeatAt: number;
+  nextStatusChangeAt: number;
   expiry?: NodeJS.Timeout;
   // #endregion
 }
@@ -67,6 +70,10 @@ const leaseCheckIntervalMs = 4_000;
 const leaseCheckJitterMs = 1_000;
 const leaseCheckTimeoutMs = 1_000;
 const maximumConcurrentLeaseChecks = 64;
+const maximumConcurrentAdmissions = 32;
+const maximumConcurrentPresenceChanges = 32;
+const heartbeatCooldownMs = 5_000;
+const statusChangeCooldownMs = 1_000;
 
 // Socket.IO can mutate connected during any awaited operation or deadline callback.
 function isConnected(client: ConnectionSocket): boolean {
@@ -88,6 +95,10 @@ export class RealtimeGateway
 
   /** Caps the lease rechecks this replica issues when sockets otherwise have no traffic. */
   private checkingLeases = 0;
+
+  /** Keeps bounded work in flight even when Identity or Redis is slow. */
+  private admitting = 0;
+  private changingPresence = 0;
   // #endregion
 
   // #region Constructor
@@ -104,11 +115,12 @@ export class RealtimeGateway
   public async handleConnection(client: ConnectionSocket): Promise<void> {
     const auth = handshakeAuth.safeParse(client.handshake.auth);
     client.handshake.auth = {};
-    if (!auth.success) {
+    if (!auth.success || this.admitting >= maximumConcurrentAdmissions) {
       client.disconnect(true);
       return;
     }
 
+    this.admitting += 1;
     try {
       const session = await this.checkConnection.execute(client.id, auth.data.token);
       if (session === null) {
@@ -119,7 +131,14 @@ export class RealtimeGateway
         await this.release(client.id, session);
         return;
       }
-      const connection: SocketConnection = { session, ready: false, changingRoom: false };
+      const connection: SocketConnection = {
+        session,
+        ready: false,
+        changingRoom: false,
+        changingPresence: false,
+        nextHeartbeatAt: 0,
+        nextStatusChangeAt: 0,
+      };
       this.connections.set(client, connection);
       client.data.realtimeSession = session;
       this.armLeaseCheck(client, connection);
@@ -163,6 +182,8 @@ export class RealtimeGateway
       }
     } catch {
       client.disconnect(true);
+    } finally {
+      this.admitting -= 1;
     }
   }
 
@@ -223,7 +244,24 @@ export class RealtimeGateway
     status?: SocketPresenceStatus,
   ): Promise<RoomAcknowledgement> {
     const connection = this.connections.get(client);
-    if (connection?.ready !== true || !isConnected(client)) return unavailable;
+    if (
+      connection?.ready !== true ||
+      !isConnected(client) ||
+      connection.changingPresence ||
+      this.changingPresence >= maximumConcurrentPresenceChanges
+    ) {
+      return unavailable;
+    }
+    const now = performance.now();
+    if (status === undefined) {
+      if (now < connection.nextHeartbeatAt) return unavailable;
+      connection.nextHeartbeatAt = now + heartbeatCooldownMs;
+    } else {
+      if (now < connection.nextStatusChangeAt) return unavailable;
+      connection.nextStatusChangeAt = now + statusChangeCooldownMs;
+    }
+    connection.changingPresence = true;
+    this.changingPresence += 1;
     try {
       if (
         !(await this.checkConnection.isCurrent(client.id, connection.session)) ||
@@ -236,6 +274,7 @@ export class RealtimeGateway
         status === undefined
           ? await this.presence.heartbeat(client.id, connection.session)
           : await this.presence.set(client.id, connection.session, status);
+      if (applied === 'limited') return unavailable;
       if (
         !applied ||
         !(await this.checkConnection.isCurrent(client.id, connection.session)) ||
@@ -248,6 +287,9 @@ export class RealtimeGateway
     } catch {
       client.disconnect(true);
       return unavailable;
+    } finally {
+      connection.changingPresence = false;
+      this.changingPresence -= 1;
     }
   }
 
@@ -317,11 +359,7 @@ export class RealtimeGateway
         break;
     }
 
-    const fence = result.kind === 'joined' ? result.fence : undefined;
-    if (
-      !(await this.checkConnection.isCurrent(client.id, session, fence)) ||
-      !isConnected(client)
-    ) {
+    if (!(await this.checkConnection.isCurrent(client.id, session)) || !isConnected(client)) {
       client.disconnect(true);
       return unavailable;
     }

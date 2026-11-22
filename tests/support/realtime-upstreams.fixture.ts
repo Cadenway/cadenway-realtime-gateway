@@ -18,12 +18,14 @@ export interface TestSession {
   readonly memberId: string;
   readonly role: 'member';
   readonly sessionExpiresAt: string;
+  readonly samlSourceMembership?: { readonly organizationId: string; readonly memberId: string };
 }
 
 /** Signed internal HTTP boundaries with single-use synthetic tickets and mutable Task access. */
 export class RealtimeUpstreams {
   // #region Properties
   private readonly tickets = new Map<string, TestSession>();
+  private readonly memberships = new Map<string, string>();
   private readonly allowed = new Set<string>();
   private readonly requests: string[] = [];
   private held?: { userId: string; entered: () => void; released: Promise<void> };
@@ -37,6 +39,7 @@ export class RealtimeUpstreams {
   private constructor(
     private readonly identity: InternalTokenVerifier,
     private readonly task: InternalTokenVerifier,
+    private readonly organization: InternalTokenVerifier,
   ) {}
   // #endregion
 
@@ -56,11 +59,12 @@ export class RealtimeUpstreams {
       x: signingKey.x,
     };
     const trustedIssuers = { 'realtime-gateway': [publicKey] };
-    const [identity, task] = await Promise.all([
+    const [identity, task, organization] = await Promise.all([
       InternalTokenVerifier.create({ audience: 'identity-service', trustedIssuers }),
       InternalTokenVerifier.create({ audience: 'task-service', trustedIssuers }),
+      InternalTokenVerifier.create({ audience: 'organization-service', trustedIssuers }),
     ]);
-    const fixture = new RealtimeUpstreams(identity, task);
+    const fixture = new RealtimeUpstreams(identity, task, organization);
     const server = createServer((request, response) => {
       void fixture.answer(request, response);
     });
@@ -73,7 +77,16 @@ export class RealtimeUpstreams {
   /** Adds one credential and optionally permits the session to see the sample task. */
   public issue(token: string, session: TestSession, canRead: boolean): void {
     this.tickets.set(token, session);
+    this.memberships.set(`${session.organizationId}:${session.userId}`, session.memberId);
+    const source = session.samlSourceMembership;
+    if (source !== undefined) {
+      this.memberships.set(`${source.organizationId}:${session.userId}`, source.memberId);
+    }
     if (canRead) this.allowed.add(session.userId);
+  }
+
+  public revokeMembership(organization: string, userId: string): void {
+    this.memberships.delete(`${organization}:${userId}`);
   }
 
   /** Suspends one user's next Task proof until the test releases the owning request. */
@@ -137,7 +150,28 @@ export class RealtimeUpstreams {
           send(404, {});
           return;
         }
+        if (request.headers.prefer === 'cadenway-saml-source-membership') {
+          response.setHeader('Preference-Applied', 'cadenway-saml-source-membership');
+        }
         send(200, session);
+        return;
+      }
+      if (request.url === '/internal/v1/search-membership') {
+        const principal = await this.organization.verify(auth.slice(7));
+        if (
+          principal.actor.type !== 'user' ||
+          principal.actor.id === null ||
+          principal.organizationId === null
+        ) {
+          send(403, {});
+          return;
+        }
+        const memberId = this.memberships.get(`${principal.organizationId}:${principal.actor.id}`);
+        if (memberId === undefined) {
+          send(404, {});
+          return;
+        }
+        send(200, { memberId, role: 'member', version: 1 });
         return;
       }
       const principal = await this.task.verify(auth.slice(7));

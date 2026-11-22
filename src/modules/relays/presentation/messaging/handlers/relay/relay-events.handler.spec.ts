@@ -27,8 +27,7 @@ function setup(gitRelaysEnabled = true) {
     switchSession: vi.fn().mockResolvedValue(undefined),
     removeMember: vi.fn().mockResolvedValue(undefined),
     changeMemberRole: vi.fn().mockResolvedValue(undefined),
-    advanceVisibility: vi.fn().mockResolvedValue(undefined),
-    disconnectOrganization: vi.fn().mockResolvedValue(undefined),
+    invalidateScope: vi.fn().mockResolvedValue(undefined),
     invalidateTaskRoom: vi.fn().mockResolvedValue(undefined),
   } satisfies RelayInvalidationPort;
   const execute = vi.fn().mockResolvedValue(undefined);
@@ -148,32 +147,42 @@ describe('RelayEventsHandler', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it('passes the stable fact ID to atomic organization invalidation', async () => {
+  it('passes the stable list and fact IDs to scoped invalidation', async () => {
     const { handler, subscriptions, invalidation } = setup();
     await handler.onApplicationBootstrap();
     const subscription = subscriptions.find(
       (candidate) => candidate.event === 'list.access-changed.v1',
     );
     expect(subscription).toBeDefined();
-    await subscription?.handle({ organizationId: 'org-a', id: 'event-a' } as never, {
-      signal: new AbortController().signal,
-    });
-    expect(invalidation.advanceVisibility).not.toHaveBeenCalled();
-    expect(invalidation.disconnectOrganization).toHaveBeenCalledExactlyOnceWith('org-a', 'event-a');
+    await subscription?.handle(
+      { organizationId: 'org-a', listId: 'LIST-A', id: 'event-a' } as never,
+      {
+        signal: new AbortController().signal,
+      },
+    );
+    expect(invalidation.invalidateScope).toHaveBeenCalledExactlyOnceWith(
+      'org-a',
+      'list',
+      'list-a',
+      'event-a',
+    );
   });
 
   it('leaves a failed fence for broker redelivery without disconnecting based on an unknown state', async () => {
     const { handler, subscriptions, invalidation } = setup();
-    invalidation.disconnectOrganization.mockRejectedValue(new Error('Redis unavailable'));
+    invalidation.invalidateScope.mockRejectedValue(new Error('Redis unavailable'));
     await handler.onApplicationBootstrap();
     const subscription = subscriptions.find((candidate) => candidate.event === 'space.deleted.v1');
     expect(subscription).toBeDefined();
     await expect(
-      subscription?.handle({ organizationId: 'org-a', id: 'event-a' } as never, {
-        signal: new AbortController().signal,
-      }),
+      subscription?.handle(
+        { organizationId: 'org-a', spaceId: 'space-a', id: 'event-a' } as never,
+        {
+          signal: new AbortController().signal,
+        },
+      ),
     ).rejects.toThrow('Redis unavailable');
-    expect(invalidation.advanceVisibility).not.toHaveBeenCalled();
+    expect(invalidation.invalidateScope).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -192,7 +201,7 @@ describe('RelayEventsHandler', () => {
       action,
       signal,
     );
-    expect(invalidation.disconnectOrganization).not.toHaveBeenCalled();
+    expect(invalidation.invalidateScope).not.toHaveBeenCalled();
   });
 
   it('projects a producer status fact without its display or audience data', async () => {
@@ -241,19 +250,27 @@ describe('RelayEventsHandler', () => {
     expect(subscription).toBeDefined();
     const signal = new AbortController().signal;
     await subscription?.handle({ organizationId: 'org-a', changed: ['name'] } as never, { signal });
-    expect(invalidation.advanceVisibility).not.toHaveBeenCalled();
-    expect(invalidation.disconnectOrganization).not.toHaveBeenCalled();
+    expect(invalidation.invalidateScope).not.toHaveBeenCalled();
     await subscription?.handle(
-      { organizationId: 'org-a', id: 'event-a', changed: ['ownerUserId'] } as never,
+      {
+        organizationId: 'org-a',
+        id: 'event-a',
+        spaceId: 'space-a',
+        changed: ['ownerUserId'],
+      } as never,
       {
         signal,
       },
     );
-    expect(invalidation.advanceVisibility).not.toHaveBeenCalled();
-    expect(invalidation.disconnectOrganization).toHaveBeenCalledExactlyOnceWith('org-a', 'event-a');
+    expect(invalidation.invalidateScope).toHaveBeenCalledExactlyOnceWith(
+      'org-a',
+      'space',
+      'space-a',
+      'event-a',
+    );
   });
 
-  it('only advances the task visibility fence for a placement change', async () => {
+  it('advances only the moved task subscription fence for a placement change', async () => {
     const { handler, subscriptions, invalidation, execute } = setup();
     await handler.onApplicationBootstrap();
     const subscription = subscriptions.find((candidate) => candidate.event === 'task.updated.v1');
@@ -270,10 +287,15 @@ describe('RelayEventsHandler', () => {
       changed: ['name'],
     };
     await subscription?.handle(fact as never, { signal });
-    expect(invalidation.advanceVisibility).not.toHaveBeenCalled();
+    expect(invalidation.invalidateScope).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledTimes(1);
     await subscription?.handle({ ...fact, changed: ['listId'] } as never, { signal });
-    expect(invalidation.advanceVisibility).toHaveBeenCalledExactlyOnceWith('org-a');
+    expect(invalidation.invalidateScope).toHaveBeenCalledExactlyOnceWith(
+      'org-a',
+      'task',
+      'CAD-42',
+      'event-a',
+    );
     expect(execute).toHaveBeenCalledTimes(2);
   });
 });

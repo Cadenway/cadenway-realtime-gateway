@@ -30,9 +30,6 @@ export class ApplyRelayInvalidation {
           input.role,
         );
         break;
-      case 'organization':
-        await this.connections.disconnectOrganization(input.organizationId, input.factId);
-        break;
       case 'task-room':
         await this.connections.invalidateTaskRoom(
           input.organizationId,
@@ -42,7 +39,12 @@ export class ApplyRelayInvalidation {
         );
         break;
       case 'visibility':
-        await this.connections.advanceVisibility(input.organizationId);
+        await this.connections.invalidateScope(
+          input.organizationId,
+          input.resource,
+          input.resourceId,
+          input.factId,
+        );
         break;
     }
     signal.throwIfAborted();

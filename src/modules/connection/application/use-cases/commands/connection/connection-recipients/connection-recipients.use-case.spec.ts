@@ -46,6 +46,7 @@ function fixture() {
       .fn<RecipientRegistry['markMembershipRemoved']>()
       .mockResolvedValue(undefined),
     advanceVisibility: vi.fn<RecipientRegistry['advanceVisibility']>().mockResolvedValue(undefined),
+    invalidateScope: vi.fn<RecipientRegistry['invalidateScope']>().mockResolvedValue(undefined),
     invalidateOrganizationLeases: vi
       .fn<RecipientRegistry['invalidateOrganizationLeases']>()
       .mockResolvedValue(undefined),

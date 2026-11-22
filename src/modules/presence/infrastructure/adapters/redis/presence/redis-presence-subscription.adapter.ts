@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { RedisSubscriptionRecovery } from '../../../../../../infrastructure/redis/redis-subscription-recovery.js';
 
 const pattern = 'realtime:presence:org:*';
+const maximumConcurrentDeliveries = 16;
 const channelPattern = /^realtime:presence:org:([0-9a-f-]{36})$/u;
 const messageSchema = z.strictObject({
   id: z.uuid(),
@@ -21,6 +22,7 @@ export class RedisPresenceSubscription {
 
   /** Tracks only deliveries in progress; a newer transition supersedes the old one. */
   private readonly deliveries = new Map<string, symbol>();
+  private delivering = 0;
   private readonly unavailable = new Set<() => void>();
   private readonly untrack: () => void;
 
@@ -127,7 +129,13 @@ export class RedisPresenceSubscription {
     if (!parsed.success) return;
     const { id, at, memberId, status } = parsed.data;
     const memberKey = `${organizationId.data}/${memberId.toLowerCase()}`;
+    if (this.delivering >= maximumConcurrentDeliveries) {
+      // An omitted transition also supersedes older delivery work for this member.
+      this.deliveries.delete(memberKey);
+      return;
+    }
     const delivery = Symbol();
+    this.delivering += 1;
     this.deliveries.set(memberKey, delivery);
     const stillCurrent = (): boolean => this.ready && this.deliveries.get(memberKey) === delivery;
     void this.deliver(
@@ -137,6 +145,7 @@ export class RedisPresenceSubscription {
     )
       .catch(() => undefined)
       .finally(() => {
+        this.delivering -= 1;
         if (this.deliveries.get(memberKey) === delivery) this.deliveries.delete(memberKey);
       });
   };

@@ -1,6 +1,7 @@
 import type { FactoryProvider } from '@nestjs/common';
 
 import { RealtimeIdentityClient } from '../../../../../../clients/realtime-identity.client.js';
+import { RealtimeOrganizationClient } from '../../../../../../clients/realtime-organization.client.js';
 import { CheckConnection } from '../../../../application/use-cases/commands/connection/check-connection/check-connection.use-case.js';
 import { RedisSocketRegistry } from '../../../../infrastructure/adapters/redis/connection/redis-socket-registry.adapter.js';
 
@@ -14,7 +15,10 @@ import { RedisSocketRegistry } from '../../../../infrastructure/adapters/redis/c
  */
 export const checkConnectionProvider: FactoryProvider<CheckConnection> = {
   provide: CheckConnection,
-  inject: [RealtimeIdentityClient, RedisSocketRegistry],
-  useFactory: (identity: RealtimeIdentityClient, registry: RedisSocketRegistry): CheckConnection =>
-    new CheckConnection(identity, registry),
+  inject: [RealtimeIdentityClient, RedisSocketRegistry, RealtimeOrganizationClient],
+  useFactory: (
+    identity: RealtimeIdentityClient,
+    registry: RedisSocketRegistry,
+    membership: RealtimeOrganizationClient,
+  ): CheckConnection => new CheckConnection(identity, registry, membership),
 };

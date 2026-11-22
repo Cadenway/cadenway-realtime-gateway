@@ -1,4 +1,5 @@
 import type { RealtimeRoom } from '../../../../models/connection/realtime-room.model.js';
+import type { ConnectionRoomProof } from '../../../../models/connection/connection-room-proof.model.js';
 import type { RealtimeSession } from '../../../../models/connection/realtime-session.model.js';
 import type { RoomSelection } from '../../../../models/connection/room-selection.model.js';
 import type { SocketRegistryJoin } from '../../../../models/connection/socket-registry-join.model.js';
@@ -22,6 +23,7 @@ export interface SocketRegistryPort {
     fence: string,
     selection: RoomSelection,
     room: RealtimeRoom,
+    placement?: ConnectionRoomProof,
   ): Promise<SocketRegistryJoin>;
 
   /** Removes this socket's own recorded subscription, without consulting the resource owner. */

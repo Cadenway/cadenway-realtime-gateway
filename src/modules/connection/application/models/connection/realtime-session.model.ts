@@ -11,5 +11,6 @@ export interface RealtimeSession {
   readonly memberId: string;
   readonly userId: string;
   readonly role: 'owner' | 'admin' | 'member' | 'guest';
+  readonly samlSourceMembership?: { readonly organizationId: string; readonly memberId: string };
   // #endregion
 }

@@ -69,6 +69,7 @@ export interface AppConfig
 
   /** Enables Git event consumption after the broker grants the five named durables. */
   readonly REALTIME_GIT_RELAYS_ENABLED: boolean;
+  readonly ORGANIZATION_SERVICE_URL: string;
   // #endregion
 }
 
@@ -153,6 +154,7 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   ALLOWED_ORIGINS: allowedOriginsSchema,
   IDENTITY_SERVICE_URL: serviceUrlSchema,
   TASK_SERVICE_URL: serviceUrlSchema,
+  ORGANIZATION_SERVICE_URL: serviceUrlSchema,
   REALTIME_GIT_RELAYS_ENABLED: z
     .enum(['true', 'false'])
     .default('false')
