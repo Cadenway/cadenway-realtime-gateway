@@ -64,7 +64,8 @@ export type SearchAuthorityTokenRefusedResponse = Problem;
 
 /**
  * `auth.issuer-not-allowed` for another issuer, `auth.actor-not-allowed` for a non-user
- * actor, or `auth.organization-required` for an unscoped token.
+ * actor or for a delegated role or scope from Identity, Task or Realtime, or
+ * `auth.organization-required` for an unscoped token.
  */
 export type SearchMembershipAccessRefusedResponse = Problem;
 
@@ -96,18 +97,24 @@ const getGetSearchMembershipInternalUrl = () => {
 }
 
 /**
- * Requires issuer `search-service`, an actor of type `user` and an organization in the
- * signed token. Search signs this call for the verified user and organization of the current
- * request. Neither value comes from search input or indexed data. Every response carries
- * `Cache-Control: private, no-store`.
+ * Requires issuer `search-service`, `identity-service`, `task-service` or `realtime-gateway`,
+ * an actor of type `user` and an organization in the signed token. Search delegates the user
+ * and organization of the authenticated search request. Identity signs the account and
+ * organization bound to a locally verified credential. Task signs the author or recipient
+ * and organization from an authorized Git or Automation action. Realtime signs the account
+ * and organization of an authenticated connection. Identity, Task and Realtime send no
+ * delegated role or scopes. Every response carries `Cache-Control: private, no-store`.
  *
  * Returns the active membership's ID, version and role in one current tenant snapshot.
  * The membership ID changes after removal and rejoining. The version is the version of
  * that membership, independent of the organization's version. An unknown organization or
- * absent active membership yields the same `404 organization.not-found`. The caller uses
- * the proof to check that Task evaluates candidate access against the same membership
- * identity and version. The proof alone grants no access to search results.
- * @summary Prove current organization membership for search
+ * absent active membership yields the same `404 organization.not-found`. Search uses this
+ * proof to check that Task evaluates candidate access against the same membership identity
+ * and version. Identity uses the current role and compares the membership ID before exposing
+ * a session's selected organization. Task checks the current membership before applying
+ * delegated actions. Realtime uses it to revalidate membership for an admitted connection.
+ * The proof alone grants no access to a task or search result.
+ * @summary Prove current organization membership
  */
 const getSearchMembershipInternal = async ( options?: RequestInit): Promise<getSearchMembershipInternalResponse> => {
 

@@ -16,6 +16,17 @@ export interface RealtimeTicketRedemption {
 }
 
 /**
+ * The active membership that authorized the SAML sign-in. Present in every successful
+ * redemption for a SAML session. It can differ from the connection's current
+ * organization membership. Realtime verifies both for the authenticated user and
+ * closes the socket if either membership ceases to grant access.
+ */
+export type RealtimeSessionSamlSourceMembership = {
+  organizationId: string;
+  memberId: string;
+};
+
+/**
  * Role in an organization: `owner` ("Propriétaire"), `admin` ("Administrateur"), `member`
  * ("Membre") or `guest` ("Invité").
  */
@@ -54,6 +65,13 @@ export interface RealtimeSession {
      * @pattern Z$
      */
   sessionExpiresAt: string;
+  /**
+     * The active membership that authorized the SAML sign-in. Present in every successful
+     * redemption for a SAML session. It can differ from the connection's current
+     * organization membership. Realtime verifies both for the authenticated user and
+     * closes the socket if either membership ceases to grant access.
+     */
+  samlSourceMembership?: RealtimeSessionSamlSourceMembership;
 }
 
 /**
@@ -100,10 +118,18 @@ export type InternalTokenRefusedResponse = Problem;
 export type RealtimeTicketRedemptionRefusedResponse = Problem;
 
 /**
- * `realtime-ticket.not-found`: no usable ticket was found. There is no detail identifying
- * its state, session, organization or former holder.
+ * `realtime-ticket.not-found`: no usable ticket was found. This includes a SAML ticket
+ * when the caller did not negotiate source membership revalidation. The response gives no
+ * detail about the reason, ticket state, session, organization or former holder.
  */
 export type RealtimeTicketNotFoundResponse = Problem;
+
+/**
+ * `organization.unavailable` when Identity cannot verify the required membership with
+ * Organization. No success or authorization proof is produced. A temporary failure of
+ * introspection does not invalidate the credential.
+ */
+export type MembershipAuthorityUnavailableResponse = Problem;
 
 export type HTTPStatusCode1xx = 100 | 101 | 102 | 103;
 export type HTTPStatusCode2xx = 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207;
@@ -146,12 +172,23 @@ const getRedeemRealtimeTicketInternalUrl = () => {
  * The realtime gateway checks the socket's Origin before forwarding its ticket. The
  * organization, session, user and active membership come from Identity's records.
  *
- * In one transaction, revalidate the active session, its bound version and organization,
- * current membership and its authentication policy, and consume the unexpired ticket atomically.
+ * Verify the current membership with Organization. Then in one transaction, revalidate
+ * the active session, its bound version and organization, the membership binding and the
+ * authentication policy, and consume the unexpired ticket atomically.
  * At most one concurrent redemption succeeds. A ticket that is absent, expired, already
  * consumed or whose binding no longer authorizes the session answers the same `404`.
  * Neither a success nor a refusal exposes a ticket in logs, traces or events.
  * Do not retry redemption after an ambiguous result. A new handshake needs a fresh ticket.
+ *
+ * A caller sends `Prefer: cadenway-saml-source-membership` to confirm it can revalidate
+ * the origin of a SAML session. Identity refuses to redeem a SAML session's ticket
+ * without this preference, using the same `404 realtime-ticket.not-found` as other
+ * unusable tickets. On success Identity confirms the preference with
+ * `Preference-Applied: cadenway-saml-source-membership` even for a non-SAML session,
+ * which omits the source membership field. Without the preference, non-SAML sessions
+ * retain their existing response with neither the field nor the confirmation header.
+ * Realtime revalidates any source membership alongside the current organization
+ * membership while the connection is active.
  * @summary Redeem a realtime ticket once
  */
 const redeemRealtimeTicketInternal = async (realtimeTicketRedemption: RealtimeTicketRedemption, options?: RequestInit): Promise<redeemRealtimeTicketInternalResponse> => {
@@ -202,10 +239,15 @@ export type redeemRealtimeTicketInternalResponse404 = {
   status: 404
 }
 
+export type redeemRealtimeTicketInternalResponse503 = {
+  data: MembershipAuthorityUnavailableResponse
+  status: 503
+}
+
 export type redeemRealtimeTicketInternalResponseSuccess = (redeemRealtimeTicketInternalResponse200) & {
   headers: Headers;
 };
-export type redeemRealtimeTicketInternalResponseError = (redeemRealtimeTicketInternalResponse400 | redeemRealtimeTicketInternalResponse401 | redeemRealtimeTicketInternalResponse403 | redeemRealtimeTicketInternalResponse404) & {
+export type redeemRealtimeTicketInternalResponseError = (redeemRealtimeTicketInternalResponse400 | redeemRealtimeTicketInternalResponse401 | redeemRealtimeTicketInternalResponse403 | redeemRealtimeTicketInternalResponse404 | redeemRealtimeTicketInternalResponse503) & {
   headers: Headers;
 };
 

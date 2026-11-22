@@ -1,10 +1,8 @@
 import type { RealtimeSession } from '@cadenway/contracts/types/internal/identity-service';
 import { GetSearchMembershipInternalResponse } from '@cadenway/contracts/validators/internal/organization-service';
 import type { InternalHttpClient, InternalRequestInit } from '@cadenway/nest-common';
-import type { z } from 'zod';
 
 import { bindInternalFetch, readInternalJson } from '../infrastructure/http/internal-json.js';
-import type { samlSourceMembershipSchema } from '../infrastructure/http/saml-source-membership.schema.js';
 import { getOrganizationServiceInternalRoutes } from './generated/organization-service.js';
 
 /** Reads Organization's current proof for the socket's signed account and tenant. */
@@ -24,9 +22,10 @@ export class RealtimeOrganizationClient {
   // #region Methods
   /** Requires the socket's current membership and the SAML source membership, when present. */
   public async matches(
-    session: Pick<RealtimeSession, 'userId' | 'organizationId' | 'memberId' | 'role'> & {
-      readonly samlSourceMembership?: z.infer<typeof samlSourceMembershipSchema>;
-    },
+    session: Pick<
+      RealtimeSession,
+      'userId' | 'organizationId' | 'memberId' | 'role' | 'samlSourceMembership'
+    >,
   ): Promise<boolean> {
     const current = await this.read(session.userId, session.organizationId);
     if (current?.memberId !== session.memberId || current.role !== session.role) {
