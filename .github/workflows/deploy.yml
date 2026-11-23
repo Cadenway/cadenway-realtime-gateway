@@ -72,7 +72,7 @@ jobs:
               and ($s.entrypoint == null) and ($s.command == null)
               and ($s.deploy // {} | only(["placement", "resources"]))
               and ($s.deploy.resources // {} | only(["limits"]))
-              and ($s.networks // {} | only(["edge", "internal"]))
+              and ($s.networks // {} | only(["edge", "internal", "redis-realtime"]))
               and ($s.labels // {} | keys | all(startswith("traefik.")))
               # A subdomain of the environment, or the domain itself with its www.
               and ($s.labels // {} | to_entries | map(select(.key | endswith(".rule")))
@@ -91,10 +91,14 @@ jobs:
                 | $s.labels // {} | to_entries | map(select(.key | endswith(".middlewares")))
                 | all(.value | split(",") | all(. as $m | $defined | index($m))))
               and ($s.labels["traefik.docker.network"] // "cadenway-edge-env") == "cadenway-edge-env")
-            and (.networks // {} | only(["edge", "internal"]))
+            and (.networks // {} | only(["edge", "internal", "redis-realtime"]))
             and (.networks.edge == null or (.networks.edge.external == true
               and .networks.edge.name == "cadenway-edge-env"))
             and (.networks.internal == null or (.networks.internal.external | not))
+            and (.networks["redis-realtime"] == null or
+              (.networks["redis-realtime"] | only(["name", "ipam", "internal"])
+                and .name == "check_redis-realtime" and .internal == true
+                and (.ipam // {}) == {}))
             and (.configs // {} | to_entries | all(.value | only(["content", "name"])))
             and ((.volumes // {}) == {}) and ((.secrets // {}) == {})
           ' definition.json >/dev/null || {
