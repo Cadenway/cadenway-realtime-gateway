@@ -871,6 +871,7 @@ describe('realtime relay across two instances', () => {
     env.ORGANIZATION_SERVICE_URL = upstream.url;
     env.TASK_SERVICE_URL = upstream.url;
     env.REALTIME_GIT_RELAYS_ENABLED = 'true';
+    env.REALTIME_PAGED_RECIPIENTS_ENABLED = 'true';
     for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
     config = loadConfig(appConfigSchema);
     admin = await connectNats({ servers: natsUrl, user: 'admin', pass: adminPassword });

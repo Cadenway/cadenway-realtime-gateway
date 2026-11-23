@@ -6,12 +6,8 @@ export interface RecipientTransport {
   /** Reads projected registrations from a server-owned room index. */
   read(room: string, includePending?: boolean): Promise<readonly ConnectionRecipient[]>;
 
-  /** Publishes a current presence transition only to this replica's organization sockets. */
-  deliverPresence(
-    organizationId: string,
-    packet: unknown,
-    stillCurrent: () => boolean,
-  ): Promise<void>;
+  /** Streams bounded pages of ready recipients from a task or list delivery index. */
+  scan(room: string, signal: AbortSignal): AsyncIterable<readonly ConnectionRecipient[]>;
 
   /** Leaves room indexes for one connection. */
   leave(recipient: ConnectionRecipient, rooms: readonly string[]): void;

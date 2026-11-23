@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { RelayRecipient } from '../../../../models/relay/relay-recipient.model.js';
 import type { TaskRelayFact } from '../../../../models/relay/task-relay-fact.model.js';
 import type { TaskRelayPort } from '../../../../ports/outbound/connection/relay/task-relay.port.js';
 import { RelayTaskChange } from './relay-task-change.use-case.js';
@@ -35,8 +36,12 @@ const fact = {
 
 function setup() {
   const connections = {
-    taskSubscribers: vi.fn<TaskRelayPort['taskSubscribers']>().mockResolvedValue([recipient]),
-    listSubscribers: vi.fn<TaskRelayPort['listSubscribers']>().mockResolvedValue([recipient]),
+    taskSubscribers: vi
+      .fn<() => Promise<readonly RelayRecipient[]>>()
+      .mockResolvedValue([recipient]),
+    listSubscribers: vi
+      .fn<() => Promise<readonly RelayRecipient[]>>()
+      .mockResolvedValue([recipient]),
     fence: vi.fn<TaskRelayPort['fence']>().mockResolvedValue('5'),
     authorizeTask: vi.fn<TaskRelayPort['authorizeTask']>().mockResolvedValue({
       organizationId,
@@ -48,7 +53,16 @@ function setup() {
     deliver: vi.fn<TaskRelayPort['deliver']>().mockResolvedValue(true),
     evict: vi.fn<TaskRelayPort['evict']>().mockResolvedValue(undefined),
   };
-  return { connections, relay: new RelayTaskChange(connections) };
+  const relay = new RelayTaskChange({
+    ...connections,
+    async *taskSubscribers() {
+      yield await connections.taskSubscribers();
+    },
+    async *listSubscribers() {
+      yield await connections.listSubscribers();
+    },
+  });
+  return { connections, relay };
 }
 
 describe('RelayTaskChange', () => {

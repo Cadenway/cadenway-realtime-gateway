@@ -15,15 +15,23 @@ export class RelayTaskChange {
   /** A stale placement, missing access or invalid fence cannot emit a packet. */
   public async execute(fact: TaskRelayFact, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    const taskSubscribers = await this.connections.taskSubscribers(fact.organizationId, fact.key);
-    const listSubscribers =
-      fact.type === 'comment.created.v1'
-        ? []
-        : await this.connections.listSubscribers(fact.organizationId, fact.listId);
     const delivered = new Set<string>();
     const proofs = new Map<string, Promise<TaskPlacement | null>>();
-    await this.deliverRecipients(taskSubscribers, 'task', fact, signal, delivered, proofs);
-    await this.deliverRecipients(listSubscribers, 'list', fact, signal, delivered, proofs);
+    for await (const page of this.connections.taskSubscribers(
+      fact.organizationId,
+      fact.key,
+      signal,
+    )) {
+      await this.deliverRecipients(page, 'task', fact, signal, delivered, proofs);
+    }
+    if (fact.type === 'comment.created.v1') return;
+    for await (const page of this.connections.listSubscribers(
+      fact.organizationId,
+      fact.listId,
+      signal,
+    )) {
+      await this.deliverRecipients(page, 'list', fact, signal, delivered, proofs);
+    }
   }
 
   private async deliverRecipients(

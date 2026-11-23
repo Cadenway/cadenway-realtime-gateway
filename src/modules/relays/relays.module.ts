@@ -6,6 +6,7 @@ import type { AppConfig } from '../../config/app-config.js';
 import { RelayBrokerReadiness } from '../../infrastructure/nats/relay-broker-readiness.js';
 import { RealtimeAdmissionGates } from '../../infrastructure/redis/realtime-admission-gates.js';
 import { RedisModule } from '../../infrastructure/redis/redis.module.js';
+import { ConnectionModule } from '../connection/connection.module.js';
 import { ConnectionRecipients } from '../connection/public/connection/connection-recipients.js';
 import { ApplyRelayInvalidation } from './application/use-cases/commands/relay/apply-relay-invalidation/apply-relay-invalidation.use-case.js';
 import { RelayTaskChange } from './application/use-cases/commands/relay/relay-task-change/relay-task-change.use-case.js';
@@ -20,7 +21,7 @@ const eventStream = 'EVENTS';
 
 /** Wires validated broker facts to current authorization and targeted socket delivery. */
 @Module({
-  imports: [RedisModule],
+  imports: [RedisModule, ConnectionModule],
   providers: [
     {
       provide: RelayConnectionsAdapter,

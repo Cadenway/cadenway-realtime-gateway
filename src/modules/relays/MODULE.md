@@ -61,4 +61,7 @@ operations. JetStream redelivery can repeat an invalidation. Browsers deduplicat
 Resource fences use the space and list returned by Task at subscription time. A move invalidates
 the task subscription so the next join records its current placement. Task's current proof must
 still match the producer's space and list before a relay is delivered.
-Connection currently enumerates the full cluster room before the relay processes these batches.
+With paged discovery enabled, each replica returns one bounded page of ready recipients to Connection.
+The relay processes a page before requesting the next, so a large room cannot require one full-cluster
+socket snapshot per notice. A missing page or invalid acknowledgement fails the broker attempt. Browser notifications
+are volatile, and clients must refresh affected resources through the API after lost notifications.

@@ -1,3 +1,5 @@
+import { addAbortListener } from 'node:events';
+
 import type { Server, Socket } from 'socket.io';
 import { z } from 'zod';
 
@@ -24,6 +26,22 @@ const projectionSchema = z.object({
   realtimeSession: sessionSchema,
 });
 
+const recipientPageEvent = 'cadenway:recipient-page:v1';
+const recipientPageSize = 32;
+const recipientPageTimeoutMs = 5_000;
+const recipientPageSchema = z.strictObject({
+  recipients: z
+    .array(z.strictObject({ socketId: z.string().min(1).max(128), session: sessionSchema }))
+    .max(recipientPageSize),
+  hasMore: z.boolean(),
+});
+type RecipientPage = z.output<typeof recipientPageSchema>;
+
+const deliveryIndexSchema = z
+  .string()
+  .regex(/^(list:[0-9a-f-]{36}|task-key:[0-9a-f-]{36}:[a-z0-9-]{1,100})$/iu);
+const recipientCursorSchema = z.string().max(128);
+
 const socketRoom = z.custom<RealtimeRoom>(
   (value) => typeof value === 'string' && /^(org|member|list|task):[0-9a-f-]{36}$/u.test(value),
 );
@@ -48,16 +66,41 @@ function isInLocalRoom(socket: Socket, room: RealtimeRoom): boolean {
 
 /** Uses server-owned Socket.IO indexes and the Redis adapter for cross-instance control. */
 export class SocketIoRecipients implements RecipientTransport {
+  // #region Properties
+  /** Returns a bounded local projection only to other servers sharing the Socket.IO adapter. */
+  private readonly respondToPage = (
+    index: unknown,
+    cursor: unknown,
+    respond: (page: RecipientPage | null) => void,
+  ): void => {
+    if (typeof respond !== 'function') return;
+    const room = deliveryIndexSchema.safeParse(index);
+    const after = recipientCursorSchema.safeParse(cursor);
+    respond(room.success && after.success ? this.localPage(room.data, after.data) : null);
+  };
+  // #endregion
+
   // #region Constructor
   /** Resolves the active Socket.IO server after Nest initializes the gateway. */
   public constructor(
     private readonly server: () => Server | undefined,
     private readonly registry: Pick<RedisSocketRegistry, 'readFence' | 'hasSubscription'>,
     private readonly available: () => boolean,
+    private readonly pagedDiscovery: boolean,
   ) {}
   // #endregion
 
   // #region Methods
+  /** Registers a private adapter-level RPC. Browser sockets cannot invoke server events. */
+  public onModuleInit(): void {
+    this.readyServer().on(recipientPageEvent, this.respondToPage);
+  }
+
+  /** Detaches the private handler when the replica stops. */
+  public onApplicationShutdown(): void {
+    this.server()?.off(recipientPageEvent, this.respondToPage);
+  }
+
   /** Returns verified sockets, including pending admission only to fence them. */
   public async read(room: string, includePending = false): Promise<readonly ConnectionRecipient[]> {
     const sockets = await this.readyServer().in(room).fetchSockets();
@@ -66,6 +109,50 @@ export class SocketIoRecipients implements RecipientTransport {
       if (!verified.success || (!includePending && verified.data.realtimeReady !== true)) return [];
       return [{ socketId: socket.id, session: verified.data.realtimeSession }];
     });
+  }
+
+  /** Advances a shared cursor only past recipients covered by every replica's reply. */
+  public async *scan(
+    room: string,
+    signal: AbortSignal,
+  ): AsyncIterable<readonly ConnectionRecipient[]> {
+    const index = deliveryIndexSchema.parse(room);
+    if (!this.pagedDiscovery) {
+      signal.throwIfAborted();
+      const recipients = await this.read(index);
+      signal.throwIfAborted();
+      yield recipients;
+      return;
+    }
+    let cursor = '';
+    for (;;) {
+      signal.throwIfAborted();
+      const returned = await this.requestPages(index, cursor, signal);
+      signal.throwIfAborted();
+      const pages = z.array(recipientPageSchema).parse(returned);
+      pages.push(this.localPage(index, cursor));
+
+      let next: string | undefined;
+      for (const { recipients, hasMore } of pages) {
+        let last = cursor;
+        for (const recipient of recipients) {
+          if (recipient.socketId <= last) throw new Error('Invalid realtime recipient page.');
+          last = recipient.socketId;
+        }
+        if (hasMore && recipients.length !== recipientPageSize)
+          throw new Error('Incomplete realtime recipient page.');
+        if (hasMore && (next === undefined || last < next)) next = last;
+      }
+
+      const nextCursor = next;
+      yield pages.flatMap(({ recipients }) =>
+        nextCursor === undefined
+          ? recipients
+          : recipients.filter(({ socketId }) => socketId <= nextCursor),
+      );
+      if (nextCursor === undefined) return;
+      cursor = nextCursor;
+    }
   }
 
   /** Handles the replica's internal handoff and emits only to a still-authorized local socket. */
@@ -121,6 +208,40 @@ export class SocketIoRecipients implements RecipientTransport {
   /** Closes a single socket across gateway instances. */
   public disconnect(recipient: ConnectionRecipient): void {
     this.readyServer().in(recipient.socketId).disconnectSockets(true);
+  }
+
+  private localPage(index: string, cursor: string): RecipientPage {
+    const namespace = this.readyServer().sockets;
+    const members = namespace.adapter.rooms.get(index);
+    const recipients: ConnectionRecipient[] = [];
+    // Engine.IO admission bounds the local index, independent of the cluster's total audience.
+    for (const socketId of [...(members ?? [])].sort()) {
+      if (socketId <= cursor) continue;
+      const socket = namespace.sockets.get(socketId);
+      if (!socket?.connected) continue;
+      const session = this.readySession(socket);
+      if (session === null) continue;
+      if (recipients.length === recipientPageSize) return { recipients, hasMore: true };
+      recipients.push({ socketId, session });
+    }
+    return { recipients, hasMore: false };
+  }
+
+  private requestPages(index: string, cursor: string, signal: AbortSignal): Promise<unknown> {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(recipientPageTimeoutMs)]);
+    const request: Promise<unknown> = this.readyServer().serverSideEmitWithAck(
+      recipientPageEvent,
+      index,
+      cursor,
+    );
+    return new Promise((resolve, reject) => {
+      const listener = addAbortListener(deadline, () => {
+        reject(new Error('Realtime recipient discovery expired.'));
+      });
+      void request.then(resolve, reject).finally(() => {
+        listener[Symbol.dispose]();
+      });
+    });
   }
 
   /** Rechecks the owner state after Redis returns and emits synchronously on the local transport. */

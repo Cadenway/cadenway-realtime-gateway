@@ -33,10 +33,17 @@ function socket(id: string, rooms: readonly string[] = [taskRoom]) {
 function replica(
   local: readonly ReturnType<typeof socket>[],
   roomIndex = new Map<string, Set<string>>(),
+  pagedDiscovery = true,
 ) {
   const remoteDirectory = vi.fn();
+  const register = vi.fn();
+  const requestPages = vi
+    .fn<(event: string, room: string, cursor: string) => Promise<unknown>>()
+    .mockResolvedValue([]);
   const server = {
     in: remoteDirectory,
+    on: register,
+    serverSideEmitWithAck: requestPages,
     sockets: {
       sockets: new Map(local.map((value) => [value.id, value])),
       adapter: { rooms: roomIndex },
@@ -48,10 +55,12 @@ function replica(
   };
   const available = vi.fn(() => true);
   return {
-    receiver: new SocketIoRecipients(() => server, registry, available),
+    receiver: new SocketIoRecipients(() => server, registry, available, pagedDiscovery),
     registry,
     available,
     remoteDirectory,
+    requestPages,
+    register,
   };
 }
 
@@ -68,6 +77,72 @@ function handoff(socketId: string, deadline = Date.now() + 5_000): string {
 }
 
 describe('owning socket replica', () => {
+  it('keeps legacy discovery while installing page support during the compatibility rollout', async () => {
+    const room = `task-key:${organizationId}:CAD-42`;
+    const selected = socket('legacy');
+    const { receiver, remoteDirectory, requestPages, register } = replica([], new Map(), false);
+    remoteDirectory.mockReturnValue({ fetchSockets: vi.fn().mockResolvedValue([selected]) });
+
+    receiver.onModuleInit();
+    const pages = [];
+    for await (const page of receiver.scan(room, new AbortController().signal)) pages.push(page);
+
+    expect(pages).toEqual([[{ socketId: selected.id, session: selected.data.realtimeSession }]]);
+    expect(remoteDirectory).toHaveBeenCalledExactlyOnceWith(room);
+    expect(requestPages).not.toHaveBeenCalled();
+    expect(register).toHaveBeenCalledExactlyOnceWith(
+      'cadenway:recipient-page:v1',
+      expect.any(Function),
+    );
+  });
+
+  it('streams a large room without skipping remote sockets beyond the safe cursor', async () => {
+    const room = `task-key:${organizationId}:CAD-42`;
+    const local = Array.from({ length: 34 }, (_, index) =>
+      socket(`a${String(index).padStart(2, '0')}`),
+    );
+    const remote = { socketId: 'b00', session: session() };
+    const { receiver, remoteDirectory, requestPages } = replica(
+      local,
+      new Map([[room, new Set(local.map(({ id }) => id))]]),
+    );
+    requestPages.mockResolvedValue([{ recipients: [remote], hasMore: false }]);
+    const pages: string[][] = [];
+
+    for await (const page of receiver.scan(room, new AbortController().signal)) {
+      pages.push(page.map(({ socketId }) => socketId));
+    }
+
+    expect(pages).toEqual([local.slice(0, 32).map(({ id }) => id), ['b00', 'a32', 'a33']]);
+    expect(requestPages.mock.calls.map(([, , cursor]) => cursor)).toEqual(['', 'a31']);
+    expect(remoteDirectory).not.toHaveBeenCalled();
+  });
+
+  it('rejects an incomplete replica response and lets the broker retry', async () => {
+    const { receiver, requestPages } = replica([]);
+    requestPages.mockResolvedValue([{ recipients: [], hasMore: true }]);
+    await expect(
+      receiver
+        .scan(`task-key:${organizationId}:CAD-42`, new AbortController().signal)
+        [Symbol.asyncIterator]()
+        .next(),
+    ).rejects.toThrow('Incomplete realtime recipient page.');
+  });
+
+  it('abandons recipient discovery when the broker deadline expires before a replica replies', async () => {
+    const { receiver, requestPages } = replica([]);
+    requestPages.mockImplementation(() => new Promise(() => undefined));
+    const delivery = new AbortController();
+    const result = receiver
+      .scan(`task-key:${organizationId}:CAD-42`, delivery.signal)
+      [Symbol.asyncIterator]()
+      .next();
+
+    delivery.abort();
+
+    await expect(result).rejects.toThrow('Realtime recipient discovery expired.');
+  });
+
   it('sends a valid handoff only to the local socket on the owning replica', async () => {
     const target = socket('first-socket');
     const other = socket('second-socket');

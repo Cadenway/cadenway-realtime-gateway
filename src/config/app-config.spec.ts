@@ -87,12 +87,21 @@ describe('appConfigSchema', () => {
       INTERNAL_TOKEN_ISSUER: 'realtime-gateway',
       IDENTITY_SERVICE_URL: 'http://localhost:3010',
       TASK_SERVICE_URL: 'http://localhost:3013',
+      REALTIME_PAGED_RECIPIENTS_ENABLED: false,
       NATS_URL: 'nats://localhost:4222',
       NATS_USER: 'realtime-gateway',
       NATS_PASSWORD: 'realtimegateway',
     });
     expect(config.ALLOWED_ORIGINS).toEqual(['https://app.cadenway.test']);
     expect(config.INTERNAL_TOKEN_PRIVATE_JWK).toMatchObject({ kty: 'OKP', crv: 'Ed25519' });
+  });
+
+  it('enables paged recipient discovery only through the explicit rollout switch', () => {
+    const enabled = loadConfig(
+      appConfigSchema,
+      validEnvironment({ REALTIME_PAGED_RECIPIENTS_ENABLED: 'true' }),
+    );
+    expect(enabled.REALTIME_PAGED_RECIPIENTS_ENABLED).toBe(true);
   });
 
   it('reads the broker of the gateway with the rules of the messaging package', () => {

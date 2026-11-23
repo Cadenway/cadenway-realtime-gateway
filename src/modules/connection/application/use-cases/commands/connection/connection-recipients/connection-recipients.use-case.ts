@@ -36,11 +36,21 @@ export class ConnectionRecipients {
   }
 
   /** Finds candidate recipients subscribed to a list in the organization. */
-  public async readList(
+  public scanList(
     organizationId: string,
     listId: string,
-  ): Promise<readonly ConnectionRecipient[]> {
-    return this.readWithin(organizationId, `list:${listId}`);
+    signal: AbortSignal,
+  ): AsyncIterable<readonly ConnectionRecipient[]> {
+    return this.scanWithin(organizationId, `list:${listId}`, signal);
+  }
+
+  /** Streams ready task subscribers in bounded batches across gateway replicas. */
+  public scanTask(
+    organizationId: string,
+    taskKey: string,
+    signal: AbortSignal,
+  ): AsyncIterable<readonly ConnectionRecipient[]> {
+    return this.scanWithin(organizationId, `task-key:${organizationId}:${taskKey}`, signal);
   }
 
   /** Captures the current lease and visibility generation before consulting the resource owner. */
@@ -79,15 +89,6 @@ export class ConnectionRecipients {
     packet: unknown,
   ): Promise<boolean> {
     return this.registry.publish(recipient.socketId, recipient.session, fence, room, packet);
-  }
-
-  /** Relays a still-current presence transition only to this replica's authorized sockets. */
-  public deliverPresence(
-    organizationId: string,
-    packet: unknown,
-    stillCurrent: () => boolean,
-  ): Promise<void> {
-    return this.transport.deliverPresence(organizationId, packet, stillCurrent);
   }
 
   /** Removes an obsolete subscription without resolving a hidden task or list. */
@@ -217,6 +218,16 @@ export class ConnectionRecipients {
   ): Promise<readonly ConnectionRecipient[]> {
     const recipients = await this.transport.read(index);
     return recipients.filter(({ session }) => session.organizationId === organizationId);
+  }
+
+  private async *scanWithin(
+    organizationId: string,
+    index: string,
+    signal: AbortSignal,
+  ): AsyncIterable<readonly ConnectionRecipient[]> {
+    for await (const page of this.transport.scan(index, signal)) {
+      yield page.filter(({ session }) => session.organizationId === organizationId);
+    }
   }
 
   private async closeMember(organizationId: string, memberId: string): Promise<void> {

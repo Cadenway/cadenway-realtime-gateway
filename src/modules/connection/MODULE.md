@@ -42,12 +42,23 @@ slot, and leaving frees one. An authorized request for a new selection at capaci
   access as well as the session and membership fences. The gateway checks again after applying
   the transport room membership. A Socket.IO room is a delivery index. Relays must check the
   still-valid recipient registration and current resource access before sending a notice.
-- Presence starts after admission has been checked. A heartbeat never extends the Identity
+- Connection explicitly imports Presence for socket lifecycle operations. Its local Redis
+  subscription delivers presence snapshots only to the authorized sockets of this replica.
+  Presence starts after admission has been checked. A heartbeat never extends the Identity
   session deadline. Each command verifies the lease before acknowledging its effect.
 - The gateway maintains private session and task-key indexes for control operations
   and recipient lookup across instances. The task-key index is written only after a stable Task UUID
   has been authorized. Redis verifies the exact lease, epoch and room while publishing a short-lived
   handoff to its owning replica. Only that replica rechecks the lease and emits to its own socket.
+- Task notices use a private Socket.IO server event to read at most 32 ready recipients per
+  replica at a time after `REALTIME_PAGED_RECIPIENTS_ENABLED=true`. The coordinator advances a shared cursor only past the socket IDs covered
+  by every reply. An unavailable or incompatible replica leaves the broker delivery for retry.
+  Each page still checks Task access and fences before publishing. Control-path invalidations
+  advance their authoritative fences independently of notice delivery.
+- The default discovery mode stays compatible with older replicas. Every new replica registers
+  the page handler in either mode. Roll out page support everywhere, then enable paged discovery.
+  Disable paged discovery on every replica before rolling back to a build without page support.
+  Once enabled, an incomplete page fails the attempt even during version skew.
 - Each replica admits up to 128 concurrent owner handoffs. At capacity it drops incoming handoffs
   without queueing and increments the OpenTelemetry counter
   `cadenway.realtime.relay.handoff.dropped` with no metric attributes. It exports this counter
@@ -63,6 +74,7 @@ slot, and leaving frees one. An authorized request for a new selection at capaci
 
 ## Public entry points
 
-| Entry point                               | Consumers        |
-| ----------------------------------------- | ---------------- |
-| `public/connection/connection-recipients` | relays, presence |
+| Entry point                               | Consumers |
+| ----------------------------------------- | --------- |
+| `public/connection/connection-recipients` | relays    |
+| `connection.module`                       | relays    |
