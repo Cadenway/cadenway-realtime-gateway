@@ -52,8 +52,8 @@ function fixture() {
       .mockResolvedValue(undefined),
   } satisfies RecipientRegistry;
   const transport = {
+    scan: vi.fn<RecipientTransport['scan']>(),
     read: vi.fn<RecipientTransport['read']>().mockResolvedValue([]),
-    deliverPresence: vi.fn<RecipientTransport['deliverPresence']>().mockResolvedValue(undefined),
     leave: vi.fn<RecipientTransport['leave']>(),
     disconnect: vi.fn<RecipientTransport['disconnect']>(),
   } satisfies RecipientTransport;

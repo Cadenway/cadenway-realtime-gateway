@@ -18,7 +18,6 @@ import { appConfigSchema, type AppConfig } from './config/app-config.js';
 import { SocketIoRedisReadiness } from './infrastructure/redis/redis-io.adapter.js';
 import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { ConnectionModule } from './modules/connection/connection.module.js';
-import { PresenceModule } from './modules/presence/presence.module.js';
 import { RelaysModule } from './modules/relays/relays.module.js';
 import { RealtimeAdmissionGates } from './infrastructure/redis/realtime-admission-gates.js';
 
@@ -150,7 +149,6 @@ export function messagingOptions(config: AppConfig): MessagingModuleOptions {
         };
       },
     }),
-    PresenceModule,
     ConnectionModule,
     RelaysModule,
   ],

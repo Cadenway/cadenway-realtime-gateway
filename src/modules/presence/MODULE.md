@@ -32,6 +32,7 @@ fan-out deliveries. A busy operation returns `realtime.unavailable` without clos
 | Entry point                       | Consumers  |
 | --------------------------------- | ---------- |
 | `public/presence/manage-presence` | connection |
+| `presence.module`                 | connection |
 
-The application root mounts this module before Connection. An explicit admission gate remains
-closed until the Redis subscription is acknowledged.
+Connection imports this module for presence state and owns the delivery bridge. An explicit
+admission gate remains closed until the Redis subscription is acknowledged.

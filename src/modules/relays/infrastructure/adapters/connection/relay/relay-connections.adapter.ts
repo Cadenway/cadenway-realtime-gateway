@@ -17,16 +17,18 @@ export class RelayConnectionsAdapter implements TaskRelayPort, RelayInvalidation
   public taskSubscribers(
     organizationId: string,
     taskKey: string,
-  ): Promise<readonly RelayRecipient[]> {
-    return this.connections.readTask(organizationId, taskKey);
+    signal: AbortSignal,
+  ): AsyncIterable<readonly RelayRecipient[]> {
+    return this.connections.scanTask(organizationId, taskKey, signal);
   }
 
   /** Reads only the requested tenant's list subscribers. */
   public listSubscribers(
     organizationId: string,
     listId: string,
-  ): Promise<readonly RelayRecipient[]> {
-    return this.connections.readList(organizationId, listId);
+    signal: AbortSignal,
+  ): AsyncIterable<readonly RelayRecipient[]> {
+    return this.connections.scanList(organizationId, listId, signal);
   }
 
   /** Captures the socket's current shared fence. */

@@ -4,9 +4,10 @@
 
 ## Status
 
-The connection module is the only capability wired today. Its application query rejects each
-connection until handshake authentication is implemented. The Socket.IO gateway applies the decision
-by disconnecting the socket.
+Connection redeems a single-use ticket with Identity, verifies the current Organization membership,
+and uses Task as the visibility authority for resource subscriptions. It imports Presence for the
+socket lifecycle and owns local delivery. Relays imports the Connection capability to resolve
+recipients and apply invalidation fences for versioned broker facts.
 
 ## Runtime wiring
 
@@ -20,7 +21,7 @@ by disconnecting the socket.
 | `src/infrastructure/redis/redis.module.ts`                                            | The main Redis connection, a `ResilientRedisClient` of `@cadenway/nest-common/redis`: readiness, outage logs, closed on shutdown; presence will use it                                                                                                                                 |
 | `src/infrastructure/redis/redis-io.adapter.ts`                                        | The Socket.IO adapter: exact `Origin` check of every handshake, CORS of long-polling, fan-out through `@socket.io/redis-adapter` on the publisher and subscriber `createPubSubClients` derives from the main connection, closed on shutdown                                            |
 | `src/modules/connection/connection.module.ts`                                         | The connection capability, imported by the root module to register its Socket.IO entry point                                                                                                                                                                                           |
-| `src/modules/connection/presentation/websocket/gateways/realtime/realtime.gateway.ts` | The Socket.IO entry point. It closes every socket until handshake authentication exists.                                                                                                                                                                                               |
+| `src/modules/connection/presentation/websocket/gateways/realtime/realtime.gateway.ts` | The Socket.IO entry point redeems tickets, checks the registered lease and routes room and presence commands.                                                                                                                                                                          |
 
 `src/infrastructure/redis/` sits outside the capabilities because the fan-out of
 `src/modules/connection/` and the presence of `src/modules/presence/` share its connection, and because
@@ -41,7 +42,8 @@ up to its 2 second provider throttle to route to the new one.
 
 ## Purpose and target structure
 
-cadenway-realtime-gateway will push changes to browsers over WebSocket (`realtime.<domain>`): a task changed by someone else, a new notification (inbox badge), a due reminder, a status change coming from GitHub, presence. Local port 3001.
+cadenway-realtime-gateway pushes task and comment changes, presence, and optionally Git link
+changes over WebSocket (`realtime.<domain>`). The local listener uses port 3001.
 
 Planned event subscriptions include `task.*`, `comment.created`, `notification.created`, `reminder.due`, `git.*`, `user.status-changed`.
 

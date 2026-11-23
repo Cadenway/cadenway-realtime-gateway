@@ -5,10 +5,10 @@ import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redi
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { RedisPresenceSubscription } from '../../../../../connection/infrastructure/adapters/redis/connection/redis-presence-subscription.adapter.js';
 import { RedisSocketRegistry } from '../../../../../connection/infrastructure/adapters/redis/connection/redis-socket-registry.adapter.js';
 import type { PresenceConnection } from '../../../../application/models/presence/presence.model.js';
 import { RedisPresenceStore } from './redis-presence-store.adapter.js';
-import { RedisPresenceSubscription } from './redis-presence-subscription.adapter.js';
 
 const image =
   'redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3';

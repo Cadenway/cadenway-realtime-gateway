@@ -5,11 +5,19 @@ import type { TaskPlacement } from '../../../../models/relay/task-placement.mode
 /** Authorized socket registry and targeted transport for a task invalidation. */
 export interface TaskRelayPort {
   // #region Methods
-  /** Lists subscriptions by tenant and the stable producer key or list ID. */
-  taskSubscribers(organizationId: string, taskKey: string): Promise<readonly RelayRecipient[]>;
+  /** Streams bounded batches of subscriptions by tenant and the stable producer key. */
+  taskSubscribers(
+    organizationId: string,
+    taskKey: string,
+    signal: AbortSignal,
+  ): AsyncIterable<readonly RelayRecipient[]>;
 
-  /** Lists sockets registered for this list in the same organization. */
-  listSubscribers(organizationId: string, listId: string): Promise<readonly RelayRecipient[]>;
+  /** Streams bounded batches of this list's subscriptions in the same organization. */
+  listSubscribers(
+    organizationId: string,
+    listId: string,
+    signal: AbortSignal,
+  ): AsyncIterable<readonly RelayRecipient[]>;
 
   /** Captures the still-current socket and organization visibility fence. */
   fence(recipient: RelayRecipient): Promise<string | null>;
