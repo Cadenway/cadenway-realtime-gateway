@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/Cadenway/cadenway-realtime-gateway/compare/v0.3.0...v0.4.0) (2026-11-23)
+
+
+### Features
+
+* **realtime:** authorize ticketed rooms and relay private task events ([#24](https://github.com/Cadenway/cadenway-realtime-gateway/issues/24)) ([283ac23](https://github.com/Cadenway/cadenway-realtime-gateway/commit/283ac238c22f7a419f3d9a8b57614808088e0ac5))
+* **realtime:** relay Git task link invalidations ([#26](https://github.com/Cadenway/cadenway-realtime-gateway/issues/26)) ([468de1d](https://github.com/Cadenway/cadenway-realtime-gateway/commit/468de1dd734534897e22bfcc6c9eff1cd28b5aa9))
+
+
+### Bug Fixes
+
+* **realtime:** bound cross-replica recipient discovery ([#29](https://github.com/Cadenway/cadenway-realtime-gateway/issues/29)) ([f102710](https://github.com/Cadenway/cadenway-realtime-gateway/commit/f10271031a5af04ea7e0a69b3db0e33565f02529))
+* **realtime:** revalidate membership and bound connection admission ([#27](https://github.com/Cadenway/cadenway-realtime-gateway/issues/27)) ([f243a7f](https://github.com/Cadenway/cadenway-realtime-gateway/commit/f243a7f52280511d1fc0c5f1ce8188908aa298c2))
+
 ## [0.3.0](https://github.com/Cadenway/cadenway-realtime-gateway/compare/v0.2.0...v0.3.0) (2026-11-16)
 
 
