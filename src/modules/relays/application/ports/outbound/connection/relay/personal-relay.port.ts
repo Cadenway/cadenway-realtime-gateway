@@ -1,5 +1,5 @@
 import type { PersonalNotice } from '../../../../models/relay/personal-notice.model.js';
-import type { PersonalNoticeSubject } from '../../../../models/relay/personal-relay-fact.model.js';
+import type { PersonalNoticeSubject } from '../../../../models/relay/personal-notice-subject.model.js';
 import type { RelayRecipient } from '../../../../models/relay/relay-recipient.model.js';
 
 /** Account-scoped recipient lookup, current visibility and personal-room delivery. */

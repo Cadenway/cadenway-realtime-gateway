@@ -11,11 +11,9 @@ import {
   socketRegistrationKey,
 } from '../../../../../../infrastructure/redis/realtime-socket-authority.js';
 import type { PresenceConnection } from '../../../../application/models/presence/presence.model.js';
-import type {
-  PresencePage,
-  VisiblePresence,
-  VisiblePresenceStatus,
-} from '../../../../application/models/presence/presence-page.model.js';
+import type { PresencePage } from '../../../../application/models/presence/presence-page.model.js';
+import type { VisiblePresence } from '../../../../application/models/presence/visible-presence.model.js';
+import type { VisiblePresenceStatus } from '../../../../application/models/presence/visible-presence-status.model.js';
 import type { PresenceStatus } from '../../../../application/models/presence/presence-status.model.js';
 import type { PresenceStore } from '../../../../application/ports/outbound/redis/presence/presence-store.port.js';
 

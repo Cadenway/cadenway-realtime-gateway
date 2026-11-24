@@ -7,7 +7,7 @@ import type { NotificationCreatedV1 } from '@cadenway/contracts/events/notificat
 import type { EventConsumers } from '@cadenway/nest-messaging';
 import type { OnApplicationBootstrap } from '@nestjs/common';
 
-import type { PersonalNoticeSubject } from '../../../../application/models/relay/personal-relay-fact.model.js';
+import type { PersonalNoticeSubject } from '../../../../application/models/relay/personal-notice-subject.model.js';
 import type { RelayPersonalNotice } from '../../../../application/use-cases/commands/relay/relay-personal-notice/relay-personal-notice.use-case.js';
 
 /** Durable consumer names of the personal notice relays, granted separately by the broker. */

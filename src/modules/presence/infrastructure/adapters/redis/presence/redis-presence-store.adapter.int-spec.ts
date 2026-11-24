@@ -172,6 +172,96 @@ describe('Redis presence leases', () => {
     await store.disconnect(connection);
   });
 
+  /** Registers and connects one socket for a new member of the organization. */
+  async function online(
+    organization: string,
+    memberId = randomUUID(),
+  ): Promise<PresenceConnection> {
+    const connection = socket({ organizationId: organization, memberId });
+    expect(await registry.register(connection.socketId, connection)).toBe(true);
+    expect(await store.connect(connection)).toBe(true);
+    return connection;
+  }
+
+  it('lists only visible members of the caller organization and its own private status', async () => {
+    const organization = randomUUID();
+    const caller = await online(organization);
+    const away = await online(organization);
+    const busy = await online(organization);
+    const leaving = await online(organization);
+    const outsider = await online(randomUUID());
+    expect(await store.set(caller, 'invisible')).toBe(true);
+    expect(await store.set(away, 'away')).toBe(true);
+    expect(await store.set(busy, 'do-not-disturb')).toBe(true);
+    await store.disconnect(leaving);
+
+    const page = await store.list(caller, null);
+
+    expect(page).toEqual({
+      status: 'invisible',
+      members: [
+        { memberId: away.memberId, status: 'away' },
+        { memberId: busy.memberId, status: 'do-not-disturb' },
+      ].sort((left, right) => left.memberId.localeCompare(right.memberId)),
+      nextCursor: null,
+    });
+    expect(JSON.stringify(await store.list(away, null))).not.toContain(caller.memberId);
+    expect(JSON.stringify(page)).not.toContain(outsider.memberId);
+    expect((await store.list(outsider, null))?.members).toEqual([
+      { memberId: outsider.memberId, status: 'online' },
+    ]);
+  });
+
+  it('pages in member ID order with a last-ID cursor that survives earlier departures', async () => {
+    const organization = randomUUID();
+    const members = await Promise.all(Array.from({ length: 101 }, () => online(organization)));
+    const ordered = members.map(({ memberId }) => memberId).sort();
+    const [caller] = members;
+    if (caller === undefined) throw new Error('No member connected.');
+
+    const first = await store.list(caller, null);
+    expect(first?.members.map(({ memberId }) => memberId)).toEqual(ordered.slice(0, 100));
+    expect(first?.nextCursor).toBe(ordered[99]);
+
+    const departed = members.find(({ memberId }) => memberId === ordered[0]);
+    if (departed === undefined) throw new Error('The first member is missing.');
+    await store.disconnect(departed);
+    const second = await store.list(caller, first?.nextCursor ?? null);
+    expect(second).toEqual({
+      status: 'online',
+      members: [{ memberId: ordered[100], status: 'online' }],
+      nextCursor: null,
+    });
+    await expect(store.list(caller, 'not-a-member-id')).rejects.toThrow(RangeError);
+  });
+
+  it('omits an expired lease before the sweep and removes it from the index after', async () => {
+    const organization = randomUUID();
+    const caller = await online(organization);
+    const expiring = socket({ organizationId: organization, expiresAt: Date.now() + 250 });
+    expect(await registry.register(expiring.socketId, expiring)).toBe(true);
+    expect(await store.connect(expiring)).toBe(true);
+    expect((await store.list(caller, null))?.members).toHaveLength(2);
+
+    await delay(300);
+    expect((await store.list(caller, null))?.members).toEqual([
+      { memberId: caller.memberId, status: 'online' },
+    ]);
+    await store.expire(500);
+    expect(await redis.zrange(`realtime:presence:visible:${organization}`, '0', '-1')).toEqual([
+      caller.memberId,
+    ]);
+  });
+
+  it('refuses a page to an unregistered or revoked socket', async () => {
+    const organization = randomUUID();
+    const caller = await online(organization);
+    expect(await store.list({ ...caller, socketId: randomUUID() }, null)).toBeNull();
+    expect(await store.list({ ...caller, userId: randomUUID() }, null)).toBeNull();
+    await registry.markSessionRevoked(caller.sessionId, 2);
+    expect(await store.list(caller, null)).toBeNull();
+  });
+
   const invalidations = {
     'session revocation': (connection: PresenceConnection) =>
       registry.markSessionRevoked(connection.sessionId, 2),

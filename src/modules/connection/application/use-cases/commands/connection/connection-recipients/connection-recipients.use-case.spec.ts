@@ -71,6 +71,38 @@ function fixture() {
 }
 
 describe('ConnectionRecipients', () => {
+  it('finds only the named account in the organization account index', async () => {
+    const { connections, transport } = fixture();
+    const selected = recipient();
+    transport.read.mockResolvedValue([
+      selected,
+      {
+        ...selected,
+        socketId: 'other-org',
+        session: { ...selected.session, organizationId: otherOrganization },
+      },
+      { ...selected, socketId: 'other-account', session: { ...selected.session, userId: 'other' } },
+    ]);
+
+    await expect(connections.readAccount(organization, selected.session.userId)).resolves.toEqual([
+      selected,
+    ]);
+    expect(transport.read).toHaveBeenCalledExactlyOnceWith(
+      `account:${organization}:${selected.session.userId}`,
+    );
+  });
+
+  it('checks subject visibility using the recipient session', async () => {
+    const { connections, access } = fixture();
+    const selected = recipient();
+    const subject = { kind: 'task-id', taskId } as const;
+    const signal = new AbortController().signal;
+    access.subject.mockResolvedValue(true);
+
+    await expect(connections.subjectVisible(selected, subject, signal)).resolves.toBe(true);
+    expect(access.subject).toHaveBeenCalledExactlyOnceWith(selected.session, subject, signal);
+  });
+
   it('finds only tenant recipients of the private Task key index', async () => {
     const { connections, transport } = fixture();
     const selected = recipient();

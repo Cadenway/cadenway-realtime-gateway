@@ -15,6 +15,11 @@ import {
   TASK_STATUS_CHANGED_V1,
   TASK_UPDATED_V1,
 } from '@cadenway/contracts/events/realtime-gateway';
+import {
+  NOTIFICATION_CREATED_V1,
+  REMINDER_DUE_V1,
+  eventSchemas as notificationSchemas,
+} from '@cadenway/contracts/events/notification-service';
 import type { INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -871,6 +876,7 @@ describe('realtime relay across two instances', () => {
     env.ORGANIZATION_SERVICE_URL = upstream.url;
     env.TASK_SERVICE_URL = upstream.url;
     env.REALTIME_GIT_RELAYS_ENABLED = 'true';
+    env.REALTIME_PERSONAL_NOTICES_ENABLED = 'true';
     env.REALTIME_PAGED_RECIPIENTS_ENABLED = 'true';
     for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
     config = loadConfig(appConfigSchema);
@@ -1247,6 +1253,158 @@ describe('realtime relay across two instances', () => {
       },
     );
   }, 30_000);
+
+  it('relays personal notices only to the named account in its organization when visible', async () => {
+    const recipientId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b51';
+    const colleagueId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b52';
+    const hiddenId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b53';
+    upstream.issue('n'.repeat(43), session(recipientId, organizationId), true);
+    upstream.issue('o'.repeat(43), session(recipientId, organizationId), true);
+    upstream.issue('p'.repeat(43), session(colleagueId, organizationId), true);
+    upstream.issue('q'.repeat(43), session(hiddenId, organizationId), false);
+    upstream.issue(
+      'r'.repeat(43),
+      {
+        ...session(recipientId, otherOrganizationId),
+        sessionId: '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b54',
+      },
+      true,
+    );
+    const [onFirst, onSecond, colleague, hidden, otherTenant] = await Promise.all([
+      connect(first.url, 'n'.repeat(43)),
+      connect(second.url, 'o'.repeat(43)),
+      connect(first.url, 'p'.repeat(43)),
+      connect(second.url, 'q'.repeat(43)),
+      connect(first.url, 'r'.repeat(43)),
+    ]);
+    const personal = (socket: Socket): unknown[] => {
+      const packets: unknown[] = [];
+      socket.on('change', (packet: unknown) => {
+        const type = (packet as { type?: string }).type;
+        if (type === NOTIFICATION_CREATED_V1 || type === REMINDER_DUE_V1) packets.push(packet);
+      });
+      return packets;
+    };
+    const received = {
+      first: personal(onFirst),
+      second: personal(onSecond),
+      colleague: personal(colleague),
+      hidden: personal(hidden),
+      otherTenant: personal(otherTenant),
+    };
+    const publisher = publisherContext.get(EventPublisher);
+    const actor = { type: 'system', id: 'notification-service' } as const;
+
+    const created = await publisher.publish(notificationSchemas, NOTIFICATION_CREATED_V1, {
+      organizationId,
+      actor,
+      version: 1,
+      notificationId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e11',
+      recipientId,
+      subject: { kind: 'task-key', taskKey },
+      createdAt: '2026-11-08T10:40:00Z',
+    });
+    expect(await waitFor(() => Promise.resolve(received.first.length), 1)).toBe(1);
+    expect(await waitFor(() => Promise.resolve(received.second.length), 1)).toBe(1);
+    expect(received.first[0]).toEqual({
+      id: created.id,
+      type: NOTIFICATION_CREATED_V1,
+      at: expect.any(String) as unknown,
+      version: 1,
+      data: {},
+    });
+    expect(received.second[0]).toEqual(received.first[0]);
+
+    const reminderId = '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e12';
+    const due = await publisher.publish(notificationSchemas, REMINDER_DUE_V1, {
+      organizationId,
+      actor,
+      version: 2,
+      reminderId,
+      userId: recipientId,
+      taskId,
+    });
+    expect(await waitFor(() => Promise.resolve(received.first.length), 2)).toBe(2);
+    expect(received.first[1]).toEqual({
+      id: due.id,
+      type: REMINDER_DUE_V1,
+      at: expect.any(String) as unknown,
+      version: 2,
+      data: { reminderId, taskId },
+    });
+
+    const checksBeforeHidden = upstream.taskChecks;
+    await publisher.publish(notificationSchemas, REMINDER_DUE_V1, {
+      organizationId,
+      actor,
+      version: 2,
+      reminderId,
+      userId: hiddenId,
+      taskId,
+    });
+    await vi.waitFor(
+      () => {
+        expect(upstream.taskChecks).toBeGreaterThan(checksBeforeHidden);
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+    const receipt = await publisher.publish(notificationSchemas, NOTIFICATION_CREATED_V1, {
+      organizationId,
+      actor,
+      version: 1,
+      notificationId: '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e13',
+      recipientId: hiddenId,
+      subject: null,
+      createdAt: '2026-11-08T10:42:00Z',
+    });
+    expect(await waitFor(() => Promise.resolve(received.hidden.length), 1)).toBe(1);
+    expect(received.hidden[0]).toMatchObject({ id: receipt.id, data: {} });
+    await delay(300);
+    expect(received.first).toHaveLength(2);
+    expect(received.second).toHaveLength(2);
+    expect(received.colleague).toEqual([]);
+    expect(received.otherTenant).toEqual([]);
+  }, 40_000);
+
+  it('answers a presence snapshot of the caller organization only', async () => {
+    const watcherId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b61';
+    const awayId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b62';
+    const foreignId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b63';
+    upstream.issue('s'.repeat(43), session(watcherId, organizationId), true);
+    upstream.issue('t'.repeat(43), session(awayId, organizationId), true);
+    upstream.issue('u'.repeat(43), session(foreignId, otherOrganizationId), true);
+    const watcher = await connect(first.url, 's'.repeat(43));
+    const away = await connect(second.url, 't'.repeat(43));
+    await connect(first.url, 'u'.repeat(43));
+    expect(await away.timeout(5_000).emitWithAck('presence:set', { status: 'away' })).toEqual({
+      ok: true,
+    });
+
+    const page = (await watcher.timeout(5_000).emitWithAck('presence:list', {})) as {
+      ok: boolean;
+      status: string;
+      members: { memberId: string; status: string }[];
+      nextCursor: string | null;
+    };
+
+    expect(page).toMatchObject({ ok: true, status: 'online', nextCursor: null });
+    expect(page.members).toEqual(
+      expect.arrayContaining([
+        { memberId: watcherId, status: 'online' },
+        { memberId: awayId, status: 'away' },
+      ]),
+    );
+    expect(page.members.some(({ memberId }) => memberId === foreignId)).toBe(false);
+    expect(await watcher.timeout(5_000).emitWithAck('presence:list', {})).toEqual({
+      ok: false,
+      code: 'realtime.unavailable',
+    });
+    expect(await watcher.timeout(5_000).emitWithAck('presence:list', { cursor: awayId })).toEqual({
+      ok: false,
+      code: 'request.invalid',
+    });
+    expect(watcher.connected).toBe(true);
+  }, 20_000);
 
   it('publishes offline when the last presence lease expires', async () => {
     const observerId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b35';

@@ -31,7 +31,21 @@ Each notice carries only the current authorized task ID and uses browser protoco
 The Git subscriptions start only when `REALTIME_GIT_RELAYS_ENABLED` is enabled after the
 broker grants the realtime identity access to their durable consumers.
 
+Notification's `notification.created.v1` and `reminder.due.v1` produce personal notices of the
+same names, with the producer ID, time and version. An inbox notice has empty data; a reminder
+notice carries only the reminder and task IDs. The handler reads them with the notification-service
+validators of the installed contracts, identical to those of the realtime contract that declares
+these subscriptions. The two durables, `relay-notification-created` and `relay-reminder-due`,
+start only when `REALTIME_PERSONAL_NOTICES_ENABLED` is enabled after the broker grants them.
+
 ## Invariants
+
+- A personal notice reaches only the ready connections authenticated as the fact's account in the
+  fact's organization, through each connection's own `member:<memberId>` room. Each delivery
+  checks the captured session, membership and visibility fence, then Task's current visibility of
+  the subject as that account. Connections of the same role at the same fence share one decision.
+  A subjectless inbox fact needs only the fence. A hidden subject or a missing membership withholds
+  the notice; an unavailable decision fails the attempt for broker redelivery.
 
 - Each candidate socket is scoped to the producer organization and checked against a live session,
   a current Task visibility proof, matching task placement and an unchanged Redis fence.

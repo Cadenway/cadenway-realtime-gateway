@@ -71,6 +71,7 @@ describe('RealtimeGateway', () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     socket?.disconnect();
     socket = undefined;
     await app?.close();
@@ -424,4 +425,123 @@ describe('RealtimeGateway', () => {
       adapters.session,
     );
   });
+
+  it('joins the private account index for the authenticated organization and user', async () => {
+    const adapters = adapterFixtures();
+    const client = await connectClient(adapters);
+    const ready = hello(client);
+    client.connect();
+    await ready;
+
+    const server = app?.get(RealtimeGateway).server;
+    expect(
+      server?.sockets.adapter.rooms.get(`account:${organizationId}:${adapters.session.userId}`),
+    ).toEqual(new Set([client.id]));
+    expect(server?.sockets.adapter.rooms.has(`account:${taskId}:${adapters.session.userId}`)).toBe(
+      false,
+    );
+  });
+
+  it('rejects malformed presence snapshot requests without reading presence', async () => {
+    const adapters = adapterFixtures();
+    const client = await connectClient(adapters);
+    const ready = hello(client);
+    client.connect();
+    await ready;
+
+    for (const payload of [null, 'invalid', { memberId: taskId }]) {
+      await expect(client.emitWithAck('presence:list', payload)).resolves.toEqual({
+        ok: false,
+        code: 'request.invalid',
+      });
+    }
+    expect(adapters.presence.list).not.toHaveBeenCalled();
+  });
+
+  it('returns a snapshot and accepts only its next cursor until the last page', async () => {
+    const adapters = adapterFixtures();
+    const firstPage = {
+      status: 'invisible' as const,
+      members: [{ memberId: adapters.session.memberId, status: 'away' as const }],
+      nextCursor: 'next-page',
+    };
+    const lastPage = { status: 'online' as const, members: [], nextCursor: null };
+    adapters.presence.list.mockResolvedValueOnce(firstPage).mockResolvedValueOnce(lastPage);
+    const client = await connectClient(adapters);
+    const ready = hello(client);
+    client.connect();
+    await ready;
+
+    await expect(client.emitWithAck('presence:list', {})).resolves.toEqual({
+      ok: true,
+      ...firstPage,
+    });
+    expect(adapters.presence.list).toHaveBeenNthCalledWith(1, client.id, adapters.session, null);
+    await expect(client.emitWithAck('presence:list', { cursor: 'other' })).resolves.toEqual({
+      ok: false,
+      code: 'request.invalid',
+    });
+    await expect(
+      client.emitWithAck('presence:list', { cursor: firstPage.nextCursor }),
+    ).resolves.toEqual({
+      ok: true,
+      ...lastPage,
+    });
+    expect(adapters.presence.list).toHaveBeenNthCalledWith(
+      2,
+      client.id,
+      adapters.session,
+      firstPage.nextCursor,
+    );
+    await expect(
+      client.emitWithAck('presence:list', { cursor: firstPage.nextCursor }),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'request.invalid',
+    });
+    expect(adapters.presence.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('limits a second first page for five seconds while keeping the socket open', async () => {
+    const adapters = adapterFixtures();
+    const client = await connectClient(adapters);
+    const ready = hello(client);
+    client.connect();
+    await ready;
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(10_000);
+
+    await expect(client.emitWithAck('presence:list', {})).resolves.toMatchObject({ ok: true });
+    clock.mockReturnValue(14_999);
+    await expect(client.emitWithAck('presence:list', {})).resolves.toEqual({
+      ok: false,
+      code: 'realtime.unavailable',
+    });
+    expect(client.connected).toBe(true);
+    clock.mockReturnValue(15_000);
+    await expect(client.emitWithAck('presence:list', {})).resolves.toMatchObject({ ok: true });
+    expect(adapters.presence.list).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['missing', 'rejected'] as const)(
+    'closes the socket when the presence snapshot is %s',
+    async (failure) => {
+      const adapters = adapterFixtures();
+      if (failure === 'missing') adapters.presence.list.mockResolvedValueOnce(null);
+      else adapters.presence.list.mockRejectedValueOnce(new Error('Presence unavailable'));
+      const client = await connectClient(adapters);
+      const ready = hello(client);
+      client.connect();
+      await ready;
+
+      const socketId = client.id;
+      const disconnected = closed(client);
+      client.emit('presence:list', {});
+      await expect(disconnected).resolves.toBe('io server disconnect');
+      expect(adapters.presence.list).toHaveBeenCalledExactlyOnceWith(
+        socketId,
+        adapters.session,
+        null,
+      );
+    },
+  );
 });

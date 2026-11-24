@@ -17,7 +17,13 @@ A recurring worker calls `expire` in bounded pages. Neither a Redis channel nor 
 grants access to an organization.
 
 Redis keeps an index of the earliest expiring member lease. Updates prune expired sockets and
-reconcile the visible state in the same script as the publication. Member state remains for one
+reconcile the visible state in the same script as the publication. The same script maintains the
+organization's snapshot index: a sorted set of members whose visible status is not offline, all at
+score zero so it orders by member ID, and a hash of each member's visible status and last lease
+expiry. A snapshot page reads at most 100 members after a member ID cursor in the script that
+verifies the socket authority, omits leases already expired before the sweep and returns the
+caller's own preference, the only place where invisible appears. Members online before this index
+existed appear after their next heartbeat. Member state remains for one
 day after its last lease so an expiry worker can report offline after a short outage. Transitions
 use Redis pub/sub and are therefore transient. Clients must refresh presence on reconnect.
 

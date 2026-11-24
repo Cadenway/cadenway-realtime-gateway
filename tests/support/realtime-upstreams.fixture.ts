@@ -198,6 +198,26 @@ export class RealtimeUpstreams {
         send(200, { role: 'edit', spaceId, listId, taskKey: null });
         return;
       }
+      if (
+        request.method === 'POST' &&
+        request.url === '/internal/v1/notification-subjects/resolve'
+      ) {
+        let body = '';
+        for await (const chunk of request) body += String(chunk);
+        const { subjects } = JSON.parse(body) as {
+          subjects: { subject: Partial<Record<string, string>> }[];
+        };
+        send(200, {
+          results: subjects.map(({ subject }) => ({
+            visible:
+              subject.taskId === taskId ||
+              subject.taskKey === taskKey ||
+              subject.listId === listId ||
+              subject.spaceId === spaceId,
+          })),
+        });
+        return;
+      }
       send(404, {});
       return;
     } catch {

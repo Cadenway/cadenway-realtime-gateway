@@ -41,6 +41,7 @@ interface SocketConnection {
   ready: boolean;
   changingRoom: boolean;
   changingPresence: boolean;
+  listingPresence: boolean;
   nextHeartbeatAt: number;
   nextStatusChangeAt: number;
   nextPresenceListAt: number;
@@ -148,6 +149,7 @@ export class RealtimeGateway
         ready: false,
         changingRoom: false,
         changingPresence: false,
+        listingPresence: false,
         nextHeartbeatAt: 0,
         nextStatusChangeAt: 0,
         nextPresenceListAt: 0,
@@ -268,7 +270,7 @@ export class RealtimeGateway
     if (
       connection?.ready !== true ||
       !isConnected(client) ||
-      connection.changingPresence ||
+      connection.listingPresence ||
       this.changingPresence >= maximumConcurrentPresenceChanges
     ) {
       return unavailable;
@@ -282,7 +284,7 @@ export class RealtimeGateway
       return invalid;
     }
     delete connection.presenceCursor;
-    connection.changingPresence = true;
+    connection.listingPresence = true;
     this.changingPresence += 1;
     try {
       const page = await this.presence.list(client.id, connection.session, cursor);
@@ -300,7 +302,7 @@ export class RealtimeGateway
       client.disconnect(true);
       return unavailable;
     } finally {
-      connection.changingPresence = false;
+      connection.listingPresence = false;
       this.changingPresence -= 1;
     }
   }

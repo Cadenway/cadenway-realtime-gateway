@@ -1,6 +1,6 @@
 import type { ConnectionRecipients } from '../../../../../connection/public/connection/connection-recipients.js';
 import type { PersonalNotice } from '../../../../application/models/relay/personal-notice.model.js';
-import type { PersonalNoticeSubject } from '../../../../application/models/relay/personal-relay-fact.model.js';
+import type { PersonalNoticeSubject } from '../../../../application/models/relay/personal-notice-subject.model.js';
 import type { RelayRecipient } from '../../../../application/models/relay/relay-recipient.model.js';
 import type { TaskNotice } from '../../../../application/models/relay/task-notice.model.js';
 import type { TaskPlacement } from '../../../../application/models/relay/task-placement.model.js';
