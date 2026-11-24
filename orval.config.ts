@@ -26,5 +26,6 @@ export default defineConfig({
   'task-service': internalRoutes('task-service', [
     'checkListAccessInternal',
     'checkTaskAccessInternal',
+    'resolveNotificationSubjectsInternal',
   ]),
 });

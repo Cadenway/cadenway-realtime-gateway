@@ -1,4 +1,5 @@
 import type { PresenceConnection } from '../../../../models/presence/presence.model.js';
+import type { PresencePage } from '../../../../models/presence/presence-page.model.js';
 import type { PresenceStatus } from '../../../../models/presence/presence-status.model.js';
 
 /** Atomic, organization-scoped presence leases shared by every gateway instance. */
@@ -18,5 +19,11 @@ export interface PresenceStore {
 
   /** Processes at most the requested number of expired members and returns the count examined. */
   expire(limit: number): Promise<number>;
+
+  /**
+   * Reads one page of the connection's own organization after the member ID cursor, in the same
+   * script that verifies the socket authority. Returns null when that authority is no longer current.
+   */
+  list(connection: PresenceConnection, cursor: string | null): Promise<PresencePage | null>;
   // #endregion
 }

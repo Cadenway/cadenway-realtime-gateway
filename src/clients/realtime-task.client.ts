@@ -4,6 +4,8 @@ import {
   CheckListAccessInternalResponse,
   CheckTaskAccessInternalParams,
   CheckTaskAccessInternalResponse,
+  ResolveNotificationSubjectsInternalBody,
+  ResolveNotificationSubjectsInternalResponse,
 } from '@cadenway/contracts/validators/internal/task-service';
 import {
   MAX_CALL_TIMEOUT_MS,
@@ -29,6 +31,13 @@ export type RealtimeListProof = Readonly<{
 
 /** Current placement and stable room identity of a visible task. */
 export type RealtimeTaskProof = RealtimeListProof & Readonly<{ taskId: string; taskKey: string }>;
+
+/** A Notification resource reference whose visibility Task decides for one account. */
+export type RealtimeNotificationSubject =
+  | Readonly<{ kind: 'task-id'; taskId: string }>
+  | Readonly<{ kind: 'task-key'; taskKey: string }>
+  | Readonly<{ kind: 'list'; listId: string }>
+  | Readonly<{ kind: 'space'; spaceId: string }>;
 
 /** Binds session authority, lease and caller cancellation to the signed call. */
 function taskRequest(
@@ -125,6 +134,34 @@ export class RealtimeTaskClient {
       taskKey,
       taskId: proof.data.taskId.toLowerCase(),
     };
+  }
+
+  /**
+   * Asks Task whether the subject is currently visible to the session's account. Visibility only:
+   * Realtime never requests display data. A missing active membership answers false; an
+   * unavailable or malformed decision throws so the caller can retry the fact.
+   */
+  public async subject(
+    session: RealtimeAccessSession,
+    subject: RealtimeNotificationSubject,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const lookup = ResolveNotificationSubjectsInternalBody.safeParse({ subjects: [{ subject }] });
+    const options = taskRequest(session, signal);
+    if (!lookup.success || options === null) return false;
+
+    const response = await readInternalJson(
+      this.routes.resolveNotificationSubjectsInternal(lookup.data, options),
+      unavailable,
+    );
+    signal?.throwIfAborted();
+    if (response === null || session.expiresAt <= Date.now()) return false;
+
+    const decision = ResolveNotificationSubjectsInternalResponse.safeParse(response.data);
+    if (!decision.success || decision.data.results.length !== 1) throw new Error(unavailable);
+    const [result] = decision.data.results;
+    if (result === undefined || 'display' in result) throw new Error(unavailable);
+    return result.visible;
   }
   // #endregion
 }

@@ -1,4 +1,5 @@
 import type { RealtimeSession } from '../../../../models/connection/realtime-session.model.js';
+import type { SocketPresencePage } from '../../../../models/connection/socket-presence-page.model.js';
 import type { SocketPresenceStatus } from '../../../../models/connection/socket-presence-status.model.js';
 import type { SocketPresencePort } from '../../../../ports/outbound/presence/connection/socket-presence.port.js';
 
@@ -32,6 +33,15 @@ export class TrackSocketPresence {
   /** Releases one socket after its transport closes. */
   public disconnect(socketId: string, session: RealtimeSession): Promise<void> {
     return this.presence.disconnect(socketId, session);
+  }
+
+  /** Reads one snapshot page of the organization established at admission. */
+  public list(
+    socketId: string,
+    session: RealtimeSession,
+    cursor: string | null,
+  ): Promise<SocketPresencePage | null> {
+    return this.presence.list(socketId, session, cursor);
   }
   // #endregion
 }

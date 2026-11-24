@@ -1,4 +1,5 @@
 import type { PresenceConnection } from '../../../../models/presence/presence.model.js';
+import type { PresencePage } from '../../../../models/presence/presence-page.model.js';
 import type { PresenceStatus } from '../../../../models/presence/presence-status.model.js';
 import type { PresenceStore } from '../../../../ports/outbound/redis/presence/presence-store.port.js';
 
@@ -33,6 +34,11 @@ export class ManagePresence {
   /** Reconciles a bounded page of expired memberships. */
   public expire(limit: number): Promise<number> {
     return this.store.expire(limit);
+  }
+
+  /** Reads one page of the connection's own organization; null when its authority has ended. */
+  public list(connection: PresenceConnection, cursor: string | null): Promise<PresencePage | null> {
+    return this.store.list(connection, cursor);
   }
   // #endregion
 }

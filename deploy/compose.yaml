@@ -26,6 +26,7 @@ services:
       # The broker, read by @cadenway/nest-messaging: readiness answers 503 while it does not answer.
       NATS_URL: ${NATS_URL}
       REALTIME_GIT_RELAYS_ENABLED: ${REALTIME_GIT_RELAYS_ENABLED:-false}
+      REALTIME_PERSONAL_NOTICES_ENABLED: ${REALTIME_PERSONAL_NOTICES_ENABLED:-false}
       REALTIME_PAGED_RECIPIENTS_ENABLED: ${REALTIME_PAGED_RECIPIENTS_ENABLED:-false}
       NATS_USER: realtime-gateway
       NATS_PASSWORD: ${REALTIME_GATEWAY_NATS_PASSWORD}

@@ -45,7 +45,7 @@ up to its 2 second provider throttle to route to the new one.
 cadenway-realtime-gateway pushes task and comment changes, presence, and optionally Git link
 changes over WebSocket (`realtime.<domain>`). The local listener uses port 3001.
 
-Planned event subscriptions include `task.*`, `comment.created`, `notification.created`, `reminder.due`, `git.*`, `user.status-changed`.
+Event subscriptions cover `task.*`, `comment.created`, `git.*` (behind `REALTIME_GIT_RELAYS_ENABLED`) and `notification.created` and `reminder.due` (behind `REALTIME_PERSONAL_NOTICES_ENABLED`). Presence changes and the `presence:list` snapshot come from Redis.
 
 ## Architectural ownership
 

@@ -46,8 +46,15 @@ slot, and leaving frees one. An authorized request for a new selection at capaci
   subscription delivers presence snapshots only to the authorized sockets of this replica.
   Presence starts after admission has been checked. A heartbeat never extends the Identity
   session deadline. Each command verifies the lease before acknowledging its effect.
+- `presence:list` returns one snapshot page of the socket's own organization. A first page is
+  spaced by five seconds per socket, and a continuation accepts only the cursor returned by that
+  socket's previous page. One list request per socket can be in flight, apart from heartbeats and
+  status changes, and each replica reads at most 16 pages at a time under a bound separate from
+  heartbeats and status changes. A page refused by Redis authority or followed by a failed lease
+  recheck closes the socket.
 - The gateway maintains private session and task-key indexes for control operations
-  and recipient lookup across instances. The task-key index is written only after a stable Task UUID
+  and recipient lookup across instances. The private `account:<organizationId>:<userId>` index,
+  joined at handshake, finds the connections a personal notice names by account. The task-key index is written only after a stable Task UUID
   has been authorized. Redis verifies the exact lease, epoch and room while publishing a short-lived
   handoff to its owning replica. Only that replica rechecks the lease and emits to its own socket.
 - Task notices use a private Socket.IO server event to read at most 32 ready recipients per

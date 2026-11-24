@@ -1,3 +1,4 @@
+import type { NotificationSubject } from '../../../../models/connection/notification-subject.model.js';
 import type { RealtimeSession } from '../../../../models/connection/realtime-session.model.js';
 
 /** Checks resource visibility at Task with the verified account and organization. */
@@ -26,5 +27,12 @@ export interface RoomAccessPort {
     readonly taskKey: string;
     readonly taskId?: string;
   } | null>;
+
+  /** Decides one Notification subject's current visibility for this session's account. */
+  subject(
+    session: RealtimeSession,
+    subject: NotificationSubject,
+    signal?: AbortSignal,
+  ): Promise<boolean>;
   // #endregion
 }

@@ -11,7 +11,7 @@ This is the target protocol. Confirm event names and payloads against the instal
 | --- | --- | --- |
 | `task.updated`, `task.status-changed` | `task:<id>` and `list:<listId>` | `{ taskId, changed }` |
 | `comment.created` | `task:<id>` | `{ taskId, commentId }` |
-| `notification.created` | the member's personal room | `{ unread }` (inbox badge) |
+| `notification.created` | the member's personal room | `{}` (inbox badge invalidation, no count) |
 | `reminder.due` | the member's personal room | `{ reminderId, taskId }` |
 | `git.*` | `task:<id>` | `{ taskId, link }` |
 | `user.status-changed` | `org:<id>` | `{ member, status }` |

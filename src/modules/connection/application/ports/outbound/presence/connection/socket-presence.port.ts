@@ -1,4 +1,5 @@
 import type { RealtimeSession } from '../../../../models/connection/realtime-session.model.js';
+import type { SocketPresencePage } from '../../../../models/connection/socket-presence-page.model.js';
 import type { SocketPresenceStatus } from '../../../../models/connection/socket-presence-status.model.js';
 
 /** Binds the owning Presence capability to one already verified socket. */
@@ -19,5 +20,12 @@ export interface SocketPresencePort {
 
   /** Clears only the supplied socket's lease. */
   disconnect(socketId: string, session: RealtimeSession): Promise<void>;
+
+  /** Reads one snapshot page of the verified organization; null when the socket lost authority. */
+  list(
+    socketId: string,
+    session: RealtimeSession,
+    cursor: string | null,
+  ): Promise<SocketPresencePage | null>;
   // #endregion
 }

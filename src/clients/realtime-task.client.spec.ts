@@ -98,6 +98,72 @@ describe('RealtimeTaskClient', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])(
+    'returns subject visibility %s using the signed session authority',
+    async (visible) => {
+      const subject = { kind: 'task-id', taskId } as const;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input, options) => {
+        const request = new Request(input, options);
+        expect(request.method).toBe('POST');
+        expect(request.url).toBe(`${baseUrl}/internal/v1/notification-subjects/resolve`);
+        expect(await request.json()).toEqual({ subjects: [{ subject }] });
+        const principal = await upstream.verifier.verify(
+          request.headers.get('authorization')?.slice(7) ?? '',
+        );
+        expect(principal).toMatchObject({
+          actor: { type: 'user', id: userId },
+          organizationId: orgId,
+          role: 'member',
+          scopes: [],
+        });
+        return Response.json({ results: [{ visible }] });
+      });
+
+      await expect(task(fetch).subject(freshSession(), subject)).resolves.toBe(visible);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('conceals a subject when Task returns 404', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(null, { status: 404 }));
+    await expect(task(fetch).subject(freshSession(), { kind: 'task-id', taskId })).resolves.toBe(
+      false,
+    );
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      'display data',
+      Response.json({
+        results: [{ visible: true, display: { taskId, taskKey, taskName: 'Task' } }],
+      }),
+    ],
+    ['no results', Response.json({ results: [] })],
+    ['multiple results', Response.json({ results: [{ visible: true }, { visible: false }] })],
+    ['an unavailable service', new Response(null, { status: 503 })],
+  ])('rejects subject decisions containing %s', async (_case, response) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+    await expect(task(fetch).subject(freshSession(), { kind: 'task-id', taskId })).rejects.toThrow(
+      'Task room authorization is unavailable.',
+    );
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('avoids subject requests for an expired session or invalid subject', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = task(fetch);
+    await expect(
+      client.subject({ ...session, expiresAt: Date.now() - 1 }, { kind: 'task-id', taskId }),
+    ).resolves.toBe(false);
+    await expect(
+      client.subject(freshSession(), { kind: 'task-id', taskId: 'invalid' }),
+    ).resolves.toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['list', listId],
     ['task', taskKey],

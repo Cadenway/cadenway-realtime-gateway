@@ -1,5 +1,6 @@
 import type { ConnectionRecipient } from '../../../../models/connection/connection-recipient.model.js';
 import type { ConnectionRoomProof } from '../../../../models/connection/connection-room-proof.model.js';
+import type { NotificationSubject } from '../../../../models/connection/notification-subject.model.js';
 import type { RealtimeRoom } from '../../../../models/connection/realtime-room.model.js';
 import type { RealtimeSession } from '../../../../models/connection/realtime-session.model.js';
 import type { RoomSelection } from '../../../../models/connection/room-selection.model.js';
@@ -33,6 +34,28 @@ export class ConnectionRecipients {
     taskKey: string,
   ): Promise<readonly ConnectionRecipient[]> {
     return this.readWithin(organizationId, `task-key:${organizationId}:${taskKey}`);
+  }
+
+  /**
+   * Reads the ready connections authenticated as one account in the producer's organization,
+   * through the private index joined at handshake. Sockets of another account are dropped.
+   */
+  public async readAccount(
+    organizationId: string,
+    userId: string,
+  ): Promise<readonly ConnectionRecipient[]> {
+    const recipients = await this.readWithin(organizationId, `account:${organizationId}:${userId}`);
+    return recipients.filter(({ session }) => session.userId === userId);
+  }
+
+  /** Asks Task, as the recipient's account and organization, for a subject's current visibility. */
+  public subjectVisible(
+    recipient: ConnectionRecipient,
+    subject: NotificationSubject,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    signal?.throwIfAborted();
+    return this.access.subject(recipient.session, subject, signal);
   }
 
   /** Finds candidate recipients subscribed to a list in the organization. */
