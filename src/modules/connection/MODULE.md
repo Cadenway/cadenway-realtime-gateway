@@ -49,8 +49,9 @@ slot, and leaving frees one. An authorized request for a new selection at capaci
 - `presence:list` returns one snapshot page of the socket's own organization. A first page is
   spaced by five seconds per socket, and a continuation accepts only the cursor returned by that
   socket's previous page. One list request per socket can be in flight, apart from heartbeats and
-  status changes, within the replica's bound on presence operations. A page refused by Redis
-  authority or followed by a failed lease recheck closes the socket.
+  status changes, and each replica reads at most 16 pages at a time under a bound separate from
+  heartbeats and status changes. A page refused by Redis authority or followed by a failed lease
+  recheck closes the socket.
 - The gateway maintains private session and task-key indexes for control operations
   and recipient lookup across instances. The private `account:<organizationId>:<userId>` index,
   joined at handshake, finds the connections a personal notice names by account. The task-key index is written only after a stable Task UUID

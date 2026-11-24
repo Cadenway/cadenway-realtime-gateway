@@ -253,6 +253,24 @@ describe('Redis presence leases', () => {
     ]);
   });
 
+  it('indexes a member again when it leaves invisible', async () => {
+    const organization = randomUUID();
+    const caller = await online(organization);
+    const member = await online(organization);
+    expect(await store.set(member, 'invisible')).toBe(true);
+    expect((await store.list(caller, null))?.members).toEqual([
+      { memberId: caller.memberId, status: 'online' },
+    ]);
+    await delay(1_050);
+    expect(await store.set(member, 'online')).toBe(true);
+    expect((await store.list(caller, null))?.members).toEqual(
+      [
+        { memberId: caller.memberId, status: 'online' },
+        { memberId: member.memberId, status: 'online' },
+      ].sort((left, right) => left.memberId.localeCompare(right.memberId)),
+    );
+  });
+
   it('refuses a page to an unregistered or revoked socket', async () => {
     const organization = randomUUID();
     const caller = await online(organization);

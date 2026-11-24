@@ -4,6 +4,7 @@ import type { RelayRecipient } from '../../../../models/relay/relay-recipient.mo
 import type { PersonalRelayPort } from '../../../../ports/outbound/connection/relay/personal-relay.port.js';
 
 const concurrency = 8;
+const maximumAttempts = 3;
 
 /**
  * Sends an inbox or reminder notice to the named account's connections in the fact's
@@ -34,7 +35,7 @@ export class RelayPersonalNotice {
       version: fact.version,
       data: fact.data,
     };
-    // One account and role at one visibility epoch shares Task's decision.
+    // One session and role at one visibility epoch shares Task's decision.
     const decisions = new Map<string, Promise<boolean>>();
     for (let offset = 0; offset < recipients.length; offset += concurrency) {
       signal.throwIfAborted();
@@ -48,6 +49,11 @@ export class RelayPersonalNotice {
     }
   }
 
+  /**
+   * A refused publish means the registration ended or the visibility epoch moved after the fence
+   * was captured. The next fence read tells them apart: an ended registration stops, a still
+   * current one is authorized again at the new epoch. Repeated races reject for broker retry.
+   */
   private async deliver(
     recipient: RelayRecipient,
     fact: PersonalRelayFact,
@@ -55,20 +61,27 @@ export class RelayPersonalNotice {
     decisions: Map<string, Promise<boolean>>,
     signal: AbortSignal,
   ): Promise<void> {
-    const fence = await this.connections.fence(recipient);
-    signal.throwIfAborted();
-    if (fence === null) return;
-    if (fact.subject !== null) {
-      const key = JSON.stringify([recipient.session.role, fence]);
-      let decision = decisions.get(key);
-      if (decision === undefined) {
-        decision = this.connections.subjectVisible(recipient, fact.subject, signal);
-        decisions.set(key, decision);
+    for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+      const fence = await this.connections.fence(recipient);
+      signal.throwIfAborted();
+      if (fence === null) return;
+      if (fact.subject !== null) {
+        // Task's answer also depends on the session's remaining lease, so only connections of
+        // the same session share it.
+        const { sessionId, expiresAt, role } = recipient.session;
+        const key = JSON.stringify([sessionId, expiresAt, role, fence]);
+        let decision = decisions.get(key);
+        if (decision === undefined) {
+          decision = this.connections.subjectVisible(recipient, fact.subject, signal);
+          decisions.set(key, decision);
+        }
+        if (!(await decision)) return;
+        signal.throwIfAborted();
       }
-      if (!(await decision)) return;
+      if (await this.connections.deliverPersonal(recipient, fence, notice)) return;
       signal.throwIfAborted();
     }
-    await this.connections.deliverPersonal(recipient, fence, notice);
+    throw new Error('Personal notice delivery kept racing with visibility changes.');
   }
   // #endregion
 }

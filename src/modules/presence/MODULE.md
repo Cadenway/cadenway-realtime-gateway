@@ -23,7 +23,9 @@ score zero so it orders by member ID, and a hash of each member's visible status
 expiry. A snapshot page reads at most 100 members after a member ID cursor in the script that
 verifies the socket authority, omits leases already expired before the sweep and returns the
 caller's own preference, the only place where invisible appears. Members online before this index
-existed appear after their next heartbeat. Member state remains for one
+existed appear after their next heartbeat. While older replicas still run during a rollout, an
+update they apply leaves the index unchanged until the member's next update through a new replica,
+within one heartbeat interval; a snapshot read in that window can show the previous visible status. Member state remains for one
 day after its last lease so an expiry worker can report offline after a short outage. Transitions
 use Redis pub/sub and are therefore transient. Clients must refresh presence on reconnect.
 

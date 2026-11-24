@@ -1364,6 +1364,7 @@ describe('realtime relay across two instances', () => {
     expect(received.second).toHaveLength(2);
     expect(received.colleague).toEqual([]);
     expect(received.otherTenant).toEqual([]);
+    expect(received.hidden).toHaveLength(1);
   }, 40_000);
 
   it('answers a presence snapshot of the caller organization only', async () => {

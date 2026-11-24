@@ -91,7 +91,57 @@ describe('RelayPersonalNotice', () => {
     expect(connections.deliverPersonal).not.toHaveBeenCalled();
   });
 
-  it('shares decisions only for connections with the same role and fence', async () => {
+  it('asks Task again for another session instead of reusing its negative decision', async () => {
+    const { connections, relay } = setup();
+    const otherSession = {
+      ...recipient,
+      socketId: 'other-session',
+      session: { ...recipient.session, sessionId: 'session-b' },
+    };
+    connections.accountRecipients.mockResolvedValue([recipient, otherSession]);
+    connections.subjectVisible.mockImplementation((candidate) =>
+      Promise.resolve(candidate.session.sessionId === 'session-b'),
+    );
+    await relay.execute(fact, new AbortController().signal);
+    expect(connections.subjectVisible).toHaveBeenCalledTimes(2);
+    expect(connections.deliverPersonal).toHaveBeenCalledExactlyOnceWith(
+      otherSession,
+      '5',
+      expect.objectContaining({ id: fact.id }) as unknown,
+    );
+  });
+
+  it('authorizes again at the new epoch when visibility moved before publication', async () => {
+    const { connections, relay } = setup();
+    connections.fence.mockResolvedValueOnce('5').mockResolvedValueOnce('6');
+    connections.deliverPersonal.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await relay.execute(fact, new AbortController().signal);
+    expect(connections.subjectVisible).toHaveBeenCalledTimes(2);
+    expect(connections.deliverPersonal).toHaveBeenLastCalledWith(
+      recipient,
+      '6',
+      expect.objectContaining({ id: fact.id }) as unknown,
+    );
+  });
+
+  it('stops without retry when the registration ended before publication', async () => {
+    const { connections, relay } = setup();
+    connections.fence.mockResolvedValueOnce('5').mockResolvedValueOnce(null);
+    connections.deliverPersonal.mockResolvedValue(false);
+    await relay.execute(fact, new AbortController().signal);
+    expect(connections.deliverPersonal).toHaveBeenCalledOnce();
+  });
+
+  it('rejects for broker retry when every publication races with a visibility change', async () => {
+    const { connections, relay } = setup();
+    connections.deliverPersonal.mockResolvedValue(false);
+    await expect(relay.execute(fact, new AbortController().signal)).rejects.toThrow(
+      'Personal notice delivery kept racing with visibility changes.',
+    );
+    expect(connections.deliverPersonal).toHaveBeenCalledTimes(3);
+  });
+
+  it('shares decisions only for connections of the same session, role and fence', async () => {
     const { connections, relay } = setup();
     const same = { ...recipient, socketId: 'same' };
     const role = {

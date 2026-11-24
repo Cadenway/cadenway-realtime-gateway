@@ -84,6 +84,8 @@ const leaseCheckTimeoutMs = 1_000;
 const maximumConcurrentLeaseChecks = 64;
 const maximumConcurrentAdmissions = 32;
 const maximumConcurrentPresenceChanges = 32;
+// Snapshot pages have their own replica bound so a reconnect storm cannot starve heartbeats.
+const maximumConcurrentPresenceLists = 16;
 const heartbeatCooldownMs = 5_000;
 const statusChangeCooldownMs = 1_000;
 const presenceListCooldownMs = 5_000;
@@ -112,6 +114,7 @@ export class RealtimeGateway
   /** Keeps bounded work in flight even when Identity or Redis is slow. */
   private admitting = 0;
   private changingPresence = 0;
+  private listingPresence = 0;
   // #endregion
 
   // #region Constructor
@@ -271,7 +274,7 @@ export class RealtimeGateway
       connection?.ready !== true ||
       !isConnected(client) ||
       connection.listingPresence ||
-      this.changingPresence >= maximumConcurrentPresenceChanges
+      this.listingPresence >= maximumConcurrentPresenceLists
     ) {
       return unavailable;
     }
@@ -285,7 +288,7 @@ export class RealtimeGateway
     }
     delete connection.presenceCursor;
     connection.listingPresence = true;
-    this.changingPresence += 1;
+    this.listingPresence += 1;
     try {
       const page = await this.presence.list(client.id, connection.session, cursor);
       if (
@@ -303,7 +306,7 @@ export class RealtimeGateway
       return unavailable;
     } finally {
       connection.listingPresence = false;
-      this.changingPresence -= 1;
+      this.listingPresence -= 1;
     }
   }
 

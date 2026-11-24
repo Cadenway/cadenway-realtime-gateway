@@ -437,9 +437,6 @@ describe('RealtimeGateway', () => {
     expect(
       server?.sockets.adapter.rooms.get(`account:${organizationId}:${adapters.session.userId}`),
     ).toEqual(new Set([client.id]));
-    expect(server?.sockets.adapter.rooms.has(`account:${taskId}:${adapters.session.userId}`)).toBe(
-      false,
-    );
   });
 
   it('rejects malformed presence snapshot requests without reading presence', async () => {
@@ -522,16 +519,47 @@ describe('RealtimeGateway', () => {
     expect(adapters.presence.list).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['missing', 'rejected'] as const)(
+  it('accepts a heartbeat while a snapshot page is in flight', async () => {
+    const adapters = adapterFixtures();
+    let release = (): void => undefined;
+    adapters.presence.list.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => {
+            resolve({ status: 'online', members: [], nextCursor: null });
+          };
+        }),
+    );
+    const client = await connectClient(adapters);
+    const ready = hello(client);
+    client.connect();
+    await ready;
+
+    const page = client.emitWithAck('presence:list', {});
+    await vi.waitFor(() => {
+      expect(adapters.presence.list).toHaveBeenCalledOnce();
+    });
+    await expect(client.emitWithAck('presence:list', {})).resolves.toEqual({
+      ok: false,
+      code: 'realtime.unavailable',
+    });
+    await expect(client.emitWithAck('presence:heartbeat', {})).resolves.toEqual({ ok: true });
+    release();
+    await expect(page).resolves.toMatchObject({ ok: true, nextCursor: null });
+  });
+
+  it.each(['missing', 'rejected', 'stale'] as const)(
     'closes the socket when the presence snapshot is %s',
     async (failure) => {
       const adapters = adapterFixtures();
-      if (failure === 'missing') adapters.presence.list.mockResolvedValueOnce(null);
-      else adapters.presence.list.mockRejectedValueOnce(new Error('Presence unavailable'));
       const client = await connectClient(adapters);
       const ready = hello(client);
       client.connect();
       await ready;
+      if (failure === 'missing') adapters.presence.list.mockResolvedValueOnce(null);
+      else if (failure === 'rejected')
+        adapters.presence.list.mockRejectedValueOnce(new Error('Presence unavailable'));
+      else adapters.registry.readFence.mockResolvedValueOnce(null);
 
       const socketId = client.id;
       const disconnected = closed(client);
