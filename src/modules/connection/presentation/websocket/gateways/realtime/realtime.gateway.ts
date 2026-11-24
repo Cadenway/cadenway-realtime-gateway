@@ -13,6 +13,7 @@ import { z } from 'zod';
 
 import type { RealtimeSession } from '../../../../application/models/connection/realtime-session.model.js';
 import type { RoomSelection } from '../../../../application/models/connection/room-selection.model.js';
+import type { SocketPresencePage } from '../../../../application/models/connection/socket-presence-page.model.js';
 import type { SocketPresenceStatus } from '../../../../application/models/connection/socket-presence-status.model.js';
 import type { ChangeRoomOutput } from '../../../../application/use-cases/commands/connection/change-room/change-room.output.js';
 import { ChangeRoom } from '../../../../application/use-cases/commands/connection/change-room/change-room.use-case.js';
@@ -28,6 +29,11 @@ type RoomAcknowledgement =
         'request.invalid' | 'room.not-found' | 'room.limit-reached' | 'realtime.unavailable';
     };
 
+/** A snapshot page, or a refusal that keeps the connection open unless authority was lost. */
+type PresenceListAcknowledgement =
+  | ({ readonly ok: true } & SocketPresencePage)
+  | { readonly ok: false; readonly code: 'request.invalid' | 'realtime.unavailable' };
+
 interface SocketConnection {
   // #region Properties
   /** Verified session and local readiness, room operation and expiry state. */
@@ -37,7 +43,11 @@ interface SocketConnection {
   changingPresence: boolean;
   nextHeartbeatAt: number;
   nextStatusChangeAt: number;
+  nextPresenceListAt: number;
   expiry?: NodeJS.Timeout;
+
+  /** The only cursor a continuation page accepts: the one returned by this socket's last page. */
+  presenceCursor?: string;
   // #endregion
 }
 
@@ -65,6 +75,7 @@ const emptyPayload = z.strictObject({});
 const presencePayload = z.strictObject({
   status: z.enum(['online', 'away', 'do-not-disturb', 'invisible']),
 });
+const presenceListPayload = z.strictObject({ cursor: z.string().min(1).max(128).optional() });
 const heartbeatIntervalSeconds = 30;
 const leaseCheckIntervalMs = 4_000;
 const leaseCheckJitterMs = 1_000;
@@ -74,6 +85,7 @@ const maximumConcurrentAdmissions = 32;
 const maximumConcurrentPresenceChanges = 32;
 const heartbeatCooldownMs = 5_000;
 const statusChangeCooldownMs = 1_000;
+const presenceListCooldownMs = 5_000;
 
 // Socket.IO can mutate connected during any awaited operation or deadline callback.
 function isConnected(client: ConnectionSocket): boolean {
@@ -138,6 +150,7 @@ export class RealtimeGateway
         changingPresence: false,
         nextHeartbeatAt: 0,
         nextStatusChangeAt: 0,
+        nextPresenceListAt: 0,
       };
       this.connections.set(client, connection);
       client.data.realtimeSession = session;
@@ -147,6 +160,7 @@ export class RealtimeGateway
         `org:${session.organizationId}`,
         `member:${session.memberId}`,
         `session:${session.sessionId}`,
+        `account:${session.organizationId}:${session.userId}`,
       ]);
       if (!(await this.checkConnection.isCurrent(client.id, session)) || !isConnected(client)) {
         client.disconnect(true);
@@ -237,6 +251,58 @@ export class RealtimeGateway
     const checked = presencePayload.safeParse(body);
     if (!checked.success) return invalid;
     return this.changePresence(client, checked.data.status);
+  }
+
+  /**
+   * Returns one snapshot page of the verified organization. A new snapshot is spaced by five
+   * seconds per socket; a continuation accepts only the cursor of this socket's previous page.
+   */
+  @SubscribeMessage('presence:list')
+  public async listPresence(
+    @ConnectedSocket() client: ConnectionSocket,
+    @MessageBody() body: unknown,
+  ): Promise<PresenceListAcknowledgement> {
+    const checked = presenceListPayload.safeParse(body);
+    if (!checked.success) return invalid;
+    const connection = this.connections.get(client);
+    if (
+      connection?.ready !== true ||
+      !isConnected(client) ||
+      connection.changingPresence ||
+      this.changingPresence >= maximumConcurrentPresenceChanges
+    ) {
+      return unavailable;
+    }
+    const cursor = checked.data.cursor ?? null;
+    if (cursor === null) {
+      const now = performance.now();
+      if (now < connection.nextPresenceListAt) return unavailable;
+      connection.nextPresenceListAt = now + presenceListCooldownMs;
+    } else if (cursor !== connection.presenceCursor) {
+      return invalid;
+    }
+    delete connection.presenceCursor;
+    connection.changingPresence = true;
+    this.changingPresence += 1;
+    try {
+      const page = await this.presence.list(client.id, connection.session, cursor);
+      if (
+        page === null ||
+        !(await this.checkConnection.isCurrent(client.id, connection.session)) ||
+        !isConnected(client)
+      ) {
+        client.disconnect(true);
+        return unavailable;
+      }
+      if (page.nextCursor !== null) connection.presenceCursor = page.nextCursor;
+      return { ok: true, status: page.status, members: page.members, nextCursor: page.nextCursor };
+    } catch {
+      client.disconnect(true);
+      return unavailable;
+    } finally {
+      connection.changingPresence = false;
+      this.changingPresence -= 1;
+    }
   }
 
   private async changePresence(

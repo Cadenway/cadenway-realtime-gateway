@@ -34,6 +34,75 @@ export interface AccessCheck {
   taskId?: string;
 }
 
+export interface NotificationTaskIdSubjectRef {
+  kind: 'task-id';
+  taskId: string;
+}
+
+export interface NotificationTaskKeySubjectRef {
+  kind: 'task-key';
+  taskKey: TaskKey;
+}
+
+/**
+ * Stable resource reference for an authorized internal notification lookup.
+ */
+export type NotificationSubjectRef = NotificationTaskIdSubjectRef | NotificationTaskKeySubjectRef | {
+  kind: 'list';
+  listId: string;
+} | {
+  kind: 'space';
+  spaceId: string;
+};
+
+export type NotificationSubjectLookupSubjectsItem = {
+  subject: NotificationSubjectRef;
+} | {
+  subject: NotificationTaskIdSubjectRef | NotificationTaskKeySubjectRef;
+  /** Requests the task identity and name for display for a visible task. */
+  display: {
+  /** Requests a bounded excerpt from this comment on the resolved task. */
+  commentId?: string;
+};
+};
+
+export interface NotificationSubjectLookup {
+  /**
+     * @minItems 1
+     * @maxItems 100
+     */
+  subjects: NotificationSubjectLookupSubjectsItem[];
+}
+
+export type NotificationSubjectLookupResultResultsItem = {
+  visible: false;
+} | {
+  visible: true;
+  /** Returned when the API gateway requested display data for this visible task. */
+  display?: {
+  taskId: string;
+  taskKey: TaskKey;
+  taskName: string;
+  /**
+     * Returned only when a comment was requested. A plain-text preview of at
+     * most 200 Unicode code points, or null if the comment is missing, belongs
+     * to another task, was deleted or is hidden.
+     * @maxLength 200
+     * @nullable
+     */
+  commentExcerpt?: string | null;
+};
+};
+
+export interface NotificationSubjectLookupResult {
+  /**
+     * Position-aligned outcomes, one for each submitted subject.
+     * @minItems 1
+     * @maxItems 100
+     */
+  results: NotificationSubjectLookupResultResultsItem[];
+}
+
 /**
  * Members specific to the code, for example the fields that failed validation.
  */
@@ -94,12 +163,50 @@ export type ListNotFoundResponse = Problem;
  */
 export type TaskNotFoundResponse = Problem;
 
+/**
+ * The internal token is valid but the route does not accept its issuer
+ * (`auth.issuer-not-allowed`) or its actor (`auth.actor-not-allowed`), or it carries no
+ * organization (`auth.organization-required`).
+ */
+export type InternalAccessRefusedResponse = Problem;
+
+/**
+ * `organization.not-found`: task-service does not hold the actor as a member of the
+ * organization of the token, removed or not yet learnt.
+ */
+export type OrganizationNotFoundResponse = Problem;
+
+/**
+ * `task.notification-visibility-unavailable`: Task could not establish a current visibility snapshot.
+ */
+export type NotificationSubjectLookupUnavailableResponse = Problem;
+
 export type HTTPStatusCode1xx = 100 | 101 | 102 | 103;
 export type HTTPStatusCode2xx = 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207;
 export type HTTPStatusCode3xx = 300 | 301 | 302 | 303 | 304 | 305 | 307 | 308;
 export type HTTPStatusCode4xx = 400 | 401 | 402 | 403 | 404 | 405 | 406 | 407 | 408 | 409 | 410 | 411 | 412 | 413 | 414 | 415 | 416 | 417 | 418 | 419 | 420 | 421 | 422 | 423 | 424 | 426 | 428 | 429 | 431 | 451;
 export type HTTPStatusCode5xx = 500 | 501 | 502 | 503 | 504 | 505 | 507 | 511;
 export type HTTPStatusCodes = HTTPStatusCode1xx | HTTPStatusCode2xx | HTTPStatusCode3xx | HTTPStatusCode4xx | HTTPStatusCode5xx;
+
+const getHeaders = (...sources: (RequestInit['headers'] | Record<string, string | undefined>)[]) => {
+  const seen = new Set<string>();
+  const layers: [string, string | readonly string[]][][] = [];
+  for (const source of sources.reverse()) {
+    if (!source) continue;
+    const entries = source instanceof Headers
+      ? source.entries()
+      : Symbol.iterator in source
+        ? Array.from(source as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string])
+        : Object.entries<string | readonly string[] | undefined>(source);
+    const layer: [string, string | readonly string[]][] = [];
+    for (const [name, value] of entries) {
+      if (value !== undefined && !seen.has(name.toLowerCase())) layer.push([name, value]);
+    }
+    for (const [name] of layer) seen.add(name.toLowerCase());
+    layers.push(layer);
+  }
+  return Object.fromEntries(layers.reverse().flat()) as Extract<RequestInit['headers'], Record<string, unknown>>;
+};
 
 export const getTaskServiceInternalRoutes = (fetchFn: typeof globalThis.fetch = fetch) => {
 const getCheckListAccessInternalUrl = (listId: string,) => {
@@ -185,7 +292,54 @@ const checkTaskAccessInternal = async (taskKey: string, options?: RequestInit): 
 
 
 
-return { checkListAccessInternal, getCheckListAccessInternalUrl, checkTaskAccessInternal, getCheckTaskAccessInternalUrl };
+const getResolveNotificationSubjectsInternalUrl = () => {
+
+
+
+
+  return `/internal/v1/notification-subjects/resolve`
+}
+
+/**
+ * Checks up to 100 references in one read-only tenant snapshot. Task applies its canonical
+ * active-membership and read-access rules to each subject and its current placement. Archived
+ * resources remain visible when the ordinary read policy allows them. Missing, hidden,
+ * deleted and trashed subjects all return `visible: false`, with no resource details.
+ * Every input position has exactly one result at the same position, including repeated
+ * selectors. A missing active membership answers `404 organization.not-found`.
+ *
+ * Internal token: issuer `api-gateway` or `realtime-gateway`, actor `user` and organization
+ * required. The API gateway can request display data for a visible task. An optional comment
+ * excerpt requires a currently readable comment belonging to that same resolved task. The
+ * realtime gateway can request visibility only. An enrichment request from it answers
+ * `403 auth.issuer-not-allowed` before any subject is resolved.
+ *
+ * The decision belongs to this snapshot and this actor. Each later disclosure needs a
+ * fresh decision. If Task cannot establish the snapshot it returns an error for the whole
+ * batch. This lookup writes nothing and emits no events.
+ * @summary Resolve current visibility for notification subjects
+ */
+const resolveNotificationSubjectsInternal = async (notificationSubjectLookup: NotificationSubjectLookup, options?: RequestInit): Promise<resolveNotificationSubjectsInternalResponse> => {
+
+  const res = await fetchFn(getResolveNotificationSubjectsInternalUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
+    body: JSON.stringify(notificationSubjectLookup)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: resolveNotificationSubjectsInternalResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as resolveNotificationSubjectsInternalResponse
+}
+
+
+
+return { checkListAccessInternal, getCheckListAccessInternalUrl, checkTaskAccessInternal, getCheckTaskAccessInternalUrl, resolveNotificationSubjectsInternal, getResolveNotificationSubjectsInternalUrl };
 };
 
 export type checkListAccessInternalResponse200 = {
@@ -256,3 +410,43 @@ export type checkTaskAccessInternalResponseError = (checkTaskAccessInternalRespo
 };
 
 export type checkTaskAccessInternalResponse = (checkTaskAccessInternalResponseSuccess | checkTaskAccessInternalResponseError)
+
+
+export type resolveNotificationSubjectsInternalResponse200 = {
+  data: NotificationSubjectLookupResult
+  status: 200
+}
+
+export type resolveNotificationSubjectsInternalResponse400 = {
+  data: BadRequestResponse
+  status: 400
+}
+
+export type resolveNotificationSubjectsInternalResponse401 = {
+  data: InternalTokenRefusedResponse
+  status: 401
+}
+
+export type resolveNotificationSubjectsInternalResponse403 = {
+  data: InternalAccessRefusedResponse
+  status: 403
+}
+
+export type resolveNotificationSubjectsInternalResponse404 = {
+  data: OrganizationNotFoundResponse
+  status: 404
+}
+
+export type resolveNotificationSubjectsInternalResponse503 = {
+  data: NotificationSubjectLookupUnavailableResponse
+  status: 503
+}
+
+export type resolveNotificationSubjectsInternalResponseSuccess = (resolveNotificationSubjectsInternalResponse200) & {
+  headers: Headers;
+};
+export type resolveNotificationSubjectsInternalResponseError = (resolveNotificationSubjectsInternalResponse400 | resolveNotificationSubjectsInternalResponse401 | resolveNotificationSubjectsInternalResponse403 | resolveNotificationSubjectsInternalResponse404 | resolveNotificationSubjectsInternalResponse503) & {
+  headers: Headers;
+};
+
+export type resolveNotificationSubjectsInternalResponse = (resolveNotificationSubjectsInternalResponseSuccess | resolveNotificationSubjectsInternalResponseError)

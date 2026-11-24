@@ -40,6 +40,7 @@ function adapterFixtures() {
     task: vi
       .fn<RoomAccessPort['task']>()
       .mockResolvedValue({ organizationId, listId, spaceId, taskId, taskKey: 'CAD-482' }),
+    subject: vi.fn<RoomAccessPort['subject']>().mockResolvedValue(true),
   } satisfies RoomAccessPort;
   const registry = {
     register: vi.fn<SocketRegistryPort['register']>().mockResolvedValue(true),
@@ -55,6 +56,11 @@ function adapterFixtures() {
     heartbeat: vi.fn<TrackSocketPresence['heartbeat']>().mockResolvedValue(true),
     set: vi.fn<TrackSocketPresence['set']>().mockResolvedValue(true),
     disconnect: vi.fn<TrackSocketPresence['disconnect']>().mockResolvedValue(undefined),
+    list: vi.fn<TrackSocketPresence['list']>().mockResolvedValue({
+      status: 'online',
+      members: [],
+      nextCursor: null,
+    }),
   };
   return { session, identity, access, registry, presence };
 }

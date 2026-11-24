@@ -21,5 +21,6 @@ export const trackSocketPresenceProvider: FactoryProvider<TrackSocketPresence> =
       heartbeat: (socketId, session) => presence.heartbeat(lease(socketId, session)),
       set: (socketId, session, status) => presence.set(lease(socketId, session), status),
       disconnect: (socketId, session) => presence.disconnect(lease(socketId, session)),
+      list: (socketId, session, cursor) => presence.list(lease(socketId, session), cursor),
     }),
 };

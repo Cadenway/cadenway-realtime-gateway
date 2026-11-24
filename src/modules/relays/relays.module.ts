@@ -9,8 +9,10 @@ import { RedisModule } from '../../infrastructure/redis/redis.module.js';
 import { ConnectionModule } from '../connection/connection.module.js';
 import { ConnectionRecipients } from '../connection/public/connection/connection-recipients.js';
 import { ApplyRelayInvalidation } from './application/use-cases/commands/relay/apply-relay-invalidation/apply-relay-invalidation.use-case.js';
+import { RelayPersonalNotice } from './application/use-cases/commands/relay/relay-personal-notice/relay-personal-notice.use-case.js';
 import { RelayTaskChange } from './application/use-cases/commands/relay/relay-task-change/relay-task-change.use-case.js';
 import { RelayConnectionsAdapter } from './infrastructure/adapters/connection/relay/relay-connections.adapter.js';
+import { NotificationEventsHandler } from './presentation/messaging/handlers/notification/notification-events.handler.js';
 import {
   RelayEventsHandler,
   relayInvalidationHandlers,
@@ -56,6 +58,22 @@ const eventStream = 'EVENTS';
           changes,
           config.REALTIME_GIT_RELAYS_ENABLED,
         ),
+    },
+    {
+      provide: RelayPersonalNotice,
+      inject: [RelayConnectionsAdapter],
+      useFactory: (connections: RelayConnectionsAdapter): RelayPersonalNotice =>
+        new RelayPersonalNotice(connections),
+    },
+    {
+      provide: NotificationEventsHandler,
+      inject: [EventConsumers, RelayPersonalNotice, CONFIG],
+      useFactory: (
+        consumers: EventConsumers,
+        notices: RelayPersonalNotice,
+        config: AppConfig,
+      ): NotificationEventsHandler =>
+        new NotificationEventsHandler(consumers, notices, config.REALTIME_PERSONAL_NOTICES_ENABLED),
     },
     {
       provide: RelayBrokerReadiness,

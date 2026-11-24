@@ -1,12 +1,17 @@
 import type { ConnectionRecipients } from '../../../../../connection/public/connection/connection-recipients.js';
+import type { PersonalNotice } from '../../../../application/models/relay/personal-notice.model.js';
+import type { PersonalNoticeSubject } from '../../../../application/models/relay/personal-relay-fact.model.js';
 import type { RelayRecipient } from '../../../../application/models/relay/relay-recipient.model.js';
 import type { TaskNotice } from '../../../../application/models/relay/task-notice.model.js';
 import type { TaskPlacement } from '../../../../application/models/relay/task-placement.model.js';
 import type { RelayInvalidationPort } from '../../../../application/ports/outbound/connection/relay/relay-invalidation.port.js';
+import type { PersonalRelayPort } from '../../../../application/ports/outbound/connection/relay/personal-relay.port.js';
 import type { TaskRelayPort } from '../../../../application/ports/outbound/connection/relay/task-relay.port.js';
 
 /** Adapts relay operations to the connection capability's authorized public entry point. */
-export class RelayConnectionsAdapter implements TaskRelayPort, RelayInvalidationPort {
+export class RelayConnectionsAdapter
+  implements TaskRelayPort, RelayInvalidationPort, PersonalRelayPort
+{
   // #region Constructor
   /** Binds the cluster-wide connection registry and targeted Socket.IO transport. */
   public constructor(private readonly connections: ConnectionRecipients) {}
@@ -72,6 +77,37 @@ export class RelayConnectionsAdapter implements TaskRelayPort, RelayInvalidation
     fence: string,
   ): Promise<void> {
     await this.connections.evict(recipient, selection, fence);
+  }
+
+  /** Reads only the named account's ready connections in the producer's organization. */
+  public accountRecipients(
+    organizationId: string,
+    userId: string,
+  ): Promise<readonly RelayRecipient[]> {
+    return this.connections.readAccount(organizationId, userId);
+  }
+
+  /** Asks Task for the subject's current visibility as the recipient's account. */
+  public subjectVisible(
+    recipient: RelayRecipient,
+    subject: PersonalNoticeSubject,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    return this.connections.subjectVisible(recipient, subject, signal);
+  }
+
+  /** Emits only through the recipient's own member room after the fence check in Redis. */
+  public deliverPersonal(
+    recipient: RelayRecipient,
+    fence: string,
+    notice: PersonalNotice,
+  ): Promise<boolean> {
+    return this.connections.deliver(
+      recipient,
+      `member:${recipient.session.memberId}`,
+      fence,
+      notice,
+    );
   }
 
   /** Records a terminal session fence and closes its sockets. */

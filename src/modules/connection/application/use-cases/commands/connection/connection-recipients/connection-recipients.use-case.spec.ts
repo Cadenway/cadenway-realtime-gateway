@@ -60,6 +60,7 @@ function fixture() {
   const access = {
     list: vi.fn<RoomAccessPort['list']>().mockResolvedValue(null),
     task: vi.fn<RoomAccessPort['task']>().mockResolvedValue(null),
+    subject: vi.fn<RoomAccessPort['subject']>().mockResolvedValue(false),
   } satisfies RoomAccessPort;
   return {
     registry,

@@ -70,6 +70,9 @@ export interface AppConfig
   /** Enables Git event consumption after the broker grants the five named durables. */
   readonly REALTIME_GIT_RELAYS_ENABLED: boolean;
 
+  /** Enables inbox and reminder notices after the broker grants their two named durables. */
+  readonly REALTIME_PERSONAL_NOTICES_ENABLED: boolean;
+
   /** Selects paged discovery only after every replica can answer the page protocol. */
   readonly REALTIME_PAGED_RECIPIENTS_ENABLED: boolean;
   readonly ORGANIZATION_SERVICE_URL: string;
@@ -159,6 +162,10 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   TASK_SERVICE_URL: serviceUrlSchema,
   ORGANIZATION_SERVICE_URL: serviceUrlSchema,
   REALTIME_GIT_RELAYS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  REALTIME_PERSONAL_NOTICES_ENABLED: z
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
