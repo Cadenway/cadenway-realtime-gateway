@@ -35,6 +35,9 @@ interface RedisRegistryCommands {
 
   /** Advances a visibility epoch. */
   incr(key: string): Promise<number>;
+
+  /** Checks a socket in a retained notice's delivery set. */
+  sismember(key: string, member: string): Promise<number>;
   // #endregion
 }
 
@@ -48,6 +51,10 @@ const scopeDigest = createHash('sha1').update(invalidateScopeScript).digest('hex
 
 function scopePrefix(organizationId: string): string {
   return `${socketRegistryPrefix}scope:${encodeURIComponent(organizationId.toLowerCase())}:`;
+}
+
+function noticeKey(organizationId: string, noticeId: string): string {
+  return `${socketRegistryPrefix}notice:${encodeURIComponent(organizationId)}:${encodeURIComponent(noticeId)}`;
 }
 
 function visibilityKey(organizationId: string): string {
@@ -157,6 +164,19 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     return (await this.socket(socketId, session, 'has', '', room, fence)) === 1;
   }
 
+  /** Reads the shared, expiring delivery progress of one notice. */
+  public async noticeDelivered(
+    organizationId: string,
+    noticeId: string,
+    socketId: string,
+  ): Promise<boolean> {
+    try {
+      return (await this.redis.sismember(noticeKey(organizationId, noticeId), socketId)) === 1;
+    } catch {
+      throw new Error('Redis socket registry is unavailable.');
+    }
+  }
+
   /** Atomically validates the registration and publishes a bounded notice to its owning replica. */
   public async publish(
     socketId: string,
@@ -164,12 +184,23 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     fence: string,
     room: RealtimeRoom,
     packet: unknown,
+    noticeId?: string,
   ): Promise<boolean> {
     const delivery = JSON.stringify({ socketId, room, fence, packet });
     if (Buffer.byteLength(delivery) > maximumHandoffBytes) {
       throw new Error('Realtime delivery is too large.');
     }
-    const reply = await this.socket(socketId, session, 'publish', '', room, fence, delivery);
+    const reply = await this.socket(
+      socketId,
+      session,
+      'publish',
+      '',
+      room,
+      fence,
+      delivery,
+      undefined,
+      noticeId,
+    );
     if (reply === null) return false;
     if (typeof reply === 'number' && reply > 0) return true;
     throw new Error('The realtime recipient replica is unavailable.');
@@ -265,6 +296,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     fence = '',
     delivery = '',
     placement?: ConnectionRoomProof,
+    noticeId?: string,
   ): Promise<unknown> {
     // ioredis may resend a command when the connection drops before its reply.
     const requestId =
@@ -284,6 +316,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
         visibilityKey(session.organizationId),
         organizationLeaseKey(session.organizationId),
         scopePrefix(session.organizationId),
+        noticeId === undefined ? '' : noticeKey(session.organizationId, noticeId),
       ],
       [
         operation,
@@ -299,6 +332,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
         delivery,
         placement?.spaceId ?? '',
         placement?.listId ?? '',
+        socketId,
       ],
     );
   }

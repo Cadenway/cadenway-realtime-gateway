@@ -221,6 +221,7 @@ describe('Redis socket registry across two gateway instances', () => {
     const resend = new RedisSocketRegistry({
       eval: secondClient.eval.bind(secondClient),
       incr: secondClient.incr.bind(secondClient),
+      sismember: secondClient.sismember.bind(secondClient),
       evalsha: async (digest, keys, ...parts) => {
         await secondClient.evalsha(digest, keys, ...parts);
         return secondClient.evalsha(digest, keys, ...parts);
@@ -288,7 +289,12 @@ describe('Redis socket registry across two gateway instances', () => {
     const packet = { type: 'task.updated.v1', data: { changed: ['status'] } };
 
     expect(await second.publish(socketId, session, previous, room, packet)).toBe(false);
-    expect(await second.publish(socketId, session, current, room, packet)).toBe(true);
+    const noticeId = randomUUID();
+    expect(await second.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(false);
+    expect(await second.publish(socketId, session, current, room, packet, noticeId)).toBe(true);
+    expect(await first.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(true);
+    expect(await second.noticeDelivered(randomUUID(), noticeId, socketId)).toBe(false);
+    expect(await second.publish(socketId, session, current, room, packet, noticeId)).toBe(true);
     await vi.waitFor(() => {
       expect(captured).toHaveBeenCalledOnce();
     });

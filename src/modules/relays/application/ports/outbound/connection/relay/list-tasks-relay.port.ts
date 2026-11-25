@@ -14,6 +14,9 @@ export interface ListTasksRelayPort {
     signal: AbortSignal,
   ): AsyncIterable<readonly RelayRecipient[]>;
 
+  /** Checks shared progress from previous attempts. */
+  noticeDelivered(recipient: RelayRecipient, noticeId: string): Promise<boolean>;
+
   /** Captures the current session and visibility fence. */
   fence(recipient: RelayRecipient): Promise<string | null>;
 

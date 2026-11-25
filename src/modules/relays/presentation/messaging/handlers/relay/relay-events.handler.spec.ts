@@ -12,6 +12,8 @@ interface CapturedSubscription {
   /** Durable identity and the callback supplied to the messaging kit. */
   readonly handler: string;
   readonly event: string;
+  readonly deliverPolicy?: string;
+  readonly redelivery?: { readonly maxDeliveries: number; readonly delaysMs: readonly number[] };
   readonly handle: (fact: never, context: { readonly signal: AbortSignal }) => Promise<void>;
   // #endregion
 }
@@ -218,6 +220,25 @@ describe('RelayEventsHandler', () => {
     expect(invalidation.invalidateScope).not.toHaveBeenCalled();
   });
 
+  it('starts new list durables at new facts with the extended retry schedule', async () => {
+    const { handler, subscriptions } = setup();
+    await handler.onApplicationBootstrap();
+    for (const name of [
+      'relay-task-created',
+      'relay-task-archived',
+      'relay-task-unarchived',
+      'relay-task-restored',
+    ]) {
+      expect(subscriptions.find((item) => item.handler === name)).toMatchObject({
+        deliverPolicy: 'new',
+        redelivery: {
+          maxDeliveries: 32,
+          delaysMs: [1000, 5000, 30000, 120000, 600000, 1800000, 3600000],
+        },
+      });
+    }
+  });
+
   it.each([
     'task.created.v1',
     'task.archived.v1',
@@ -256,6 +277,19 @@ describe('RelayEventsHandler', () => {
     expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith({ ...fact, listId: 'old' }, signal);
     expect(execute).toHaveBeenCalledOnce();
     await subscription?.handle({ ...fact, previousListId: 'new' } as never, { signal });
+    expect(listTasksExecute).toHaveBeenCalledOnce();
+    const { id, organizationId, listId, key, spaceId, version, occurredAt, changed } = fact;
+    const withoutPrevious = {
+      id,
+      organizationId,
+      listId,
+      key,
+      spaceId,
+      version,
+      occurredAt,
+      changed,
+    };
+    await subscription?.handle(withoutPrevious as never, { signal });
     expect(listTasksExecute).toHaveBeenCalledOnce();
   });
 

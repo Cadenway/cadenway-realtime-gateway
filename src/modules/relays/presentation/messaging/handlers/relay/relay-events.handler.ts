@@ -278,6 +278,8 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     ] as const) {
       await this.consumers.subscribe({
         handler,
+        deliverPolicy: 'new',
+        redelivery: invalidationRedelivery,
         schemas: eventSchemas,
         event,
         handle: async (fact, { signal }) => {

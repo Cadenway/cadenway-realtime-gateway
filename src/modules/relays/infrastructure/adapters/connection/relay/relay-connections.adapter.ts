@@ -9,6 +9,7 @@ import type { TaskNotice } from '../../../../application/models/relay/task-notic
 import type { TaskPlacement } from '../../../../application/models/relay/task-placement.model.js';
 import type { RelayInvalidationPort } from '../../../../application/ports/outbound/connection/relay/relay-invalidation.port.js';
 import type { PersonalRelayPort } from '../../../../application/ports/outbound/connection/relay/personal-relay.port.js';
+import type { ListTasksRelayPort } from '../../../../application/ports/outbound/connection/relay/list-tasks-relay.port.js';
 import type { TaskRelayPort } from '../../../../application/ports/outbound/connection/relay/task-relay.port.js';
 
 function noticeId(factId: string): string {
@@ -25,7 +26,7 @@ function noticeId(factId: string): string {
 
 /** Adapts relay operations to the connection capability's authorized public entry point. */
 export class RelayConnectionsAdapter
-  implements TaskRelayPort, RelayInvalidationPort, PersonalRelayPort
+  implements TaskRelayPort, RelayInvalidationPort, PersonalRelayPort, ListTasksRelayPort
 {
   // #region Constructor
   /** Binds the cluster-wide connection registry and targeted Socket.IO transport. */
@@ -49,6 +50,11 @@ export class RelayConnectionsAdapter
     signal: AbortSignal,
   ): AsyncIterable<readonly RelayRecipient[]> {
     return this.connections.scanList(organizationId, listId, signal);
+  }
+
+  /** Checks shared progress before reauthorizing a socket. */
+  public noticeDelivered(recipient: RelayRecipient, noticeId: string): Promise<boolean> {
+    return this.connections.noticeDelivered(recipient, noticeId);
   }
 
   /** Captures the socket's current shared fence. */
@@ -79,7 +85,7 @@ export class RelayConnectionsAdapter
     fence: string,
     notice: ListTasksNotice,
   ): Promise<boolean> {
-    return this.connections.deliver(recipient, `list:${listId}`, fence, notice);
+    return this.connections.deliver(recipient, `list:${listId}`, fence, notice, notice.id);
   }
 
   /** Demands Task's complete current proof; an older or hidden result is withheld. */

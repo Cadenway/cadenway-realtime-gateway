@@ -49,6 +49,7 @@ import {
   listId,
   organizationId,
   otherOrganizationId,
+  otherListId,
   spaceId,
   taskId,
   taskKey,
@@ -970,6 +971,70 @@ describe('realtime relay across two instances', () => {
     expect(otherReceived).toEqual([]);
     reader.disconnect();
     outsider.disconnect();
+  });
+
+  it('withholds a move notice from denied and new-list subscribers', async () => {
+    const oldUser = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b63';
+    const deniedUser = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b64';
+    const newUser = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b65';
+    for (const [ticket, user] of [
+      ['t'.repeat(43), oldUser],
+      ['u'.repeat(43), deniedUser],
+      ['v'.repeat(43), newUser],
+    ] as const) {
+      upstream.issue(ticket, session(user, organizationId), true);
+    }
+    const [oldSocket, deniedSocket, newSocket] = await Promise.all([
+      connect(first.url, 't'.repeat(43)),
+      connect(second.url, 'u'.repeat(43)),
+      connect(second.url, 'v'.repeat(43)),
+    ]);
+    for (const [socket, list] of [
+      [oldSocket, listId],
+      [deniedSocket, listId],
+      [newSocket, otherListId],
+    ] as const) {
+      expect(
+        await socket.timeout(5000).emitWithAck('room:join', { kind: 'list', listId: list }),
+      ).toEqual({ ok: true });
+    }
+    upstream.denyTaskAccess(deniedUser);
+    const received = [[], [], []] as unknown[][];
+    [oldSocket, deniedSocket, newSocket].forEach((socket, index) =>
+      socket.on('change', (packet: unknown) => {
+        if ((packet as { type: string }).type === 'list.tasks-changed.v1')
+          received[index]?.push(packet);
+      }),
+    );
+    await publisherContext.get(EventPublisher).publish(eventSchemas, TASK_UPDATED_V1, {
+      organizationId,
+      actor: { type: 'user', id: oldUser },
+      version: 2,
+      key: taskKey,
+      spaceId,
+      listId: otherListId,
+      previousListId: listId,
+      parentKey: null,
+      name: 'Moved fixture',
+      status: 'review',
+      cancelReason: null,
+      priority: 'haute',
+      assigneeIds: [],
+      dueDate: null,
+      startDate: null,
+      estimateMinutes: null,
+      labels: [],
+      completedAt: null,
+      changed: ['listId'],
+    });
+    expect(await waitFor(() => Promise.resolve(received[0]?.length), 1)).toBe(1);
+    await delay(250);
+    expect(received[0]?.[0]).toMatchObject({ type: 'list.tasks-changed.v1', data: { listId } });
+    expect(received[1]).toEqual([]);
+    expect(received[2]).toEqual([]);
+    oldSocket.disconnect();
+    deniedSocket.disconnect();
+    newSocket.disconnect();
   });
 
   it('isolates organizations, rechecks task access and closes a revoked session', async () => {

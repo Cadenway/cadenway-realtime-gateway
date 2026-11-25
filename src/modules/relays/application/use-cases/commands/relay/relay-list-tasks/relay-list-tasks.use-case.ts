@@ -17,17 +17,25 @@ export class RelayListTasks {
     const listId = fact.listId.toLowerCase();
     const organizationId = fact.organizationId.toLowerCase();
     const id = this.connections.listTasksNoticeId(fact.id.toLowerCase());
+    const decisions = new Map<string, Promise<boolean>>();
     for await (const page of this.connections.listSubscribers(organizationId, listId, signal)) {
       for (let offset = 0; offset < page.length; offset += 8) {
         signal.throwIfAborted();
         const outcomes = await Promise.allSettled(
           page.slice(offset, offset + 8).map(async (recipient) => {
             if (recipient.session.organizationId !== organizationId) return;
+            if (await this.connections.noticeDelivered(recipient, id)) return;
             for (let attempt = 0; attempt < 3; attempt += 1) {
               const fence = await this.connections.fence(recipient);
               signal.throwIfAborted();
               if (fence === null) return;
-              if (!(await this.connections.authorizeList(recipient, listId, signal))) return;
+              const key = JSON.stringify([recipient.session.userId, recipient.session.role, fence]);
+              let decision = decisions.get(key);
+              if (decision === undefined) {
+                decision = this.connections.authorizeList(recipient, listId, signal);
+                decisions.set(key, decision);
+              }
+              if (!(await decision)) return;
               signal.throwIfAborted();
               const notice: ListTasksNotice = {
                 id,
@@ -37,6 +45,8 @@ export class RelayListTasks {
                 data: { listId },
               };
               if (await this.connections.deliverListTasks(recipient, listId, fence, notice)) return;
+              const currentFence = await this.connections.fence(recipient);
+              if (currentFence === null || currentFence === fence) return;
             }
             throw new Error('List notice delivery kept racing with visibility changes.');
           }),

@@ -37,6 +37,7 @@ function setup() {
           { ...recipient, session: { ...recipient.session, organizationId: 'org-b' } },
         ];
       }),
+    noticeDelivered: vi.fn<ListTasksRelayPort['noticeDelivered']>().mockResolvedValue(false),
     fence: vi.fn<ListTasksRelayPort['fence']>().mockResolvedValue('fence'),
     authorizeList: vi.fn<ListTasksRelayPort['authorizeList']>().mockResolvedValue(true),
     deliverListTasks: vi.fn<ListTasksRelayPort['deliverListTasks']>().mockResolvedValue(true),
@@ -88,10 +89,65 @@ describe('RelayListTasks', () => {
     expect(connections.deliverListTasks).not.toHaveBeenCalled();
   });
 
-  it('reauthorizes after a fence race and rejects repeated races', async () => {
+  it('stops when a delivery loses its subscription without a fence change', async () => {
     const { connections, relay } = setup();
+    connections.deliverListTasks.mockResolvedValue(false);
+    await relay.execute(fact, signal);
+    expect(connections.authorizeList).toHaveBeenCalledOnce();
+    expect(connections.fence).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a recipient with no fence', async () => {
+    const { connections, relay } = setup();
+    connections.fence.mockResolvedValue(null);
+    await relay.execute(fact, signal);
+    expect(connections.authorizeList).not.toHaveBeenCalled();
+  });
+
+  it('reauthorizes only when the fence moves and rejects repeated races', async () => {
+    const { connections, relay } = setup();
+    connections.fence
+      .mockResolvedValueOnce('1')
+      .mockResolvedValueOnce('2')
+      .mockResolvedValueOnce('2')
+      .mockResolvedValueOnce('3')
+      .mockResolvedValueOnce('3')
+      .mockResolvedValueOnce('4');
     connections.deliverListTasks.mockResolvedValue(false);
     await expect(relay.execute(fact, signal)).rejects.toThrow('racing');
     expect(connections.authorizeList).toHaveBeenCalledTimes(3);
+  });
+
+  it('shares decisions and resumes an aborted attempt at undelivered sockets', async () => {
+    const { connections, relay } = setup();
+    const recipients = Array.from({ length: 10 }, (_, index) => ({
+      ...recipient,
+      socketId: `socket-${String(index)}`,
+    }));
+    connections.listSubscribers.mockImplementation(async function* () {
+      await Promise.resolve();
+      yield recipients;
+    });
+    const delivered = new Set<string>();
+    connections.noticeDelivered.mockImplementation((candidate) =>
+      Promise.resolve(delivered.has(candidate.socketId)),
+    );
+    const controller = new AbortController();
+    connections.authorizeList.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return true;
+    });
+    connections.deliverListTasks.mockImplementation((candidate) => {
+      delivered.add(candidate.socketId);
+      if (delivered.size === 8) controller.abort();
+      return Promise.resolve(true);
+    });
+    await expect(relay.execute(fact, controller.signal)).rejects.toThrow();
+    expect(delivered.size).toBe(8);
+    expect(connections.authorizeList).toHaveBeenCalledOnce();
+    await relay.execute(fact, signal);
+    expect(delivered.size).toBe(10);
+    expect(connections.deliverListTasks).toHaveBeenCalledTimes(10);
+    expect(connections.authorizeList).toHaveBeenCalledTimes(2);
   });
 });

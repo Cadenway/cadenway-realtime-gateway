@@ -4,6 +4,9 @@ import { socketAuthorityLua } from '../../../../../../infrastructure/redis/realt
 const markerWindowMs = (30 * 24 * 60 * 60 + 60) * 1_000;
 const maximumResourceRooms = 32;
 const deliveryHandoffMs = 5_000;
+// A notice's delivery set only lets a redelivery skip the sockets already served: an expired set
+// makes a later redelivery serve them again, which clients deduplicate by notice id.
+const noticeDeliveryRetentionMs = 24 * 60 * 60 * 1_000;
 
 /** Redis reply for a join refused because the socket already holds its resource room limit. */
 export const socketRoomLimitReply = 'limit-reached';
@@ -21,6 +24,7 @@ local member = KEYS[3]
 local visibility = KEYS[4]
 local organizationLease = KEYS[5]
 local scopePrefix = KEYS[6]
+local notice = KEYS[7]
 local operation = ARGV[1]
 local identity = ARGV[2]
 local sessionVersion = tonumber(ARGV[3])
@@ -34,6 +38,7 @@ local deliveryChannel = ARGV[10]
 local encodedDelivery = ARGV[11]
 local spaceId = ARGV[12]
 local listId = ARGV[13]
+local socketId = ARGV[14]
 local limitReply = '${socketRoomLimitReply}'
 
 if operation == 'unregister' then
@@ -97,11 +102,17 @@ if operation == 'publish' then
   if epoch ~= expectedEpoch or redis.call('HEXISTS', socket, 'room:' .. room) ~= 1 then
     return false
   end
+  if notice ~= '' and redis.call('SISMEMBER', notice, socketId) == 1 then return 1 end
   local route = redis.call('HGET', socket, 'deliveryChannel')
   if not route then return 0 end
   local deadline = math.min(expiresAt, now + ${String(deliveryHandoffMs)})
-  return redis.call('PUBLISH', route,
+  local published = redis.call('PUBLISH', route,
     '{"deadline":' .. tostring(deadline) .. ',"delivery":' .. encodedDelivery .. '}')
+  if published > 0 and notice ~= '' then
+    redis.call('SADD', notice, socketId)
+    redis.call('PEXPIRE', notice, ${String(noticeDeliveryRetentionMs)})
+  end
+  return published
 end
 if (operation == 'join' or operation == 'evict') and epoch ~= expectedEpoch then return false end
 if requestId ~= '' and redis.call('HGET', socket, 'lastRequest') == requestId then
