@@ -27,12 +27,16 @@ visibility and deletion, task creation, update, status, archive, unarchive, tras
 individual versioned durables in the published realtime contract.
 
 Task creation, archive, unarchive, trash and restore send `list.tasks-changed.v1` to the
-fact's list; an update with a different `previousListId` sends it to the former list. The new
-consumers use `realtime-gateway__relay-task-created`, `realtime-gateway__relay-task-archived`,
-`realtime-gateway__relay-task-unarchived` and `realtime-gateway__relay-task-restored`. The notice
+fact's list; an update with a different `previousListId` sends it to the former list. These
+notices have durables of their own, never shared with an authorization invalidation, so a notice
+that keeps failing never latches the advisory that closes admission:
+`realtime-gateway__relay-task-created`, `realtime-gateway__relay-task-archived`,
+`realtime-gateway__relay-task-unarchived`, `realtime-gateway__relay-task-restored`,
+`realtime-gateway__relay-task-trashed-list` and `realtime-gateway__relay-task-moved-list` (the
+last two beside the `relay-task-trashed` and `relay-task-updated` invalidations). The notice
 contains only `{ listId }`, the browser protocol version and a UUID v5 derived from the fact ID.
 Each candidate must pass current list room authorization and an unchanged session and visibility
-fence; unavailable decisions reject the attempt for redelivery. These four durables start with
+fence; unavailable decisions reject the attempt for redelivery. These six durables start with
 `deliverPolicy: new` when first created; changing the setting does not reposition an existing
 durable. They use the extended invalidation redelivery schedule (32 deliveries with delays up to
 one hour). From the second delivery of a fact on, Connection records each socket served in a

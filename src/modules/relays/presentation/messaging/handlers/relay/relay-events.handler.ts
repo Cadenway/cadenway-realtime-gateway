@@ -50,6 +50,19 @@ export const relayInvalidationHandlers = {
   taskUpdated: 'relay-task-updated',
 } as const;
 
+/**
+ * Durables that only send `list.tasks-changed.v1`, apart from the authorization invalidations: they
+ * start at new facts and never gate admission.
+ */
+export const listNoticeHandlers = {
+  taskCreated: 'relay-task-created',
+  taskArchived: 'relay-task-archived',
+  taskUnarchived: 'relay-task-unarchived',
+  taskRestored: 'relay-task-restored',
+  taskTrashed: 'relay-task-trashed-list',
+  taskMoved: 'relay-task-moved-list',
+} as const;
+
 // Authorization markers must survive an extended Redis outage while JetStream keeps the fact.
 const invalidationRedelivery: EventRedelivery = {
   delaysMs: [1_000, 5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000],
@@ -219,8 +232,8 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: TASK_TRASHED_V1,
-      handle: async (fact, { signal, deliveryCount }) => {
-        await this.invalidation.execute(
+      handle: (fact, { signal }) =>
+        this.invalidation.execute(
           {
             kind: 'task-room',
             organizationId: fact.organizationId.toLowerCase(),
@@ -228,9 +241,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
             action: 'trash',
           },
           signal,
-        );
-        await this.listTasks.execute(fact, signal, deliveryCount);
-      },
+        ),
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.taskPurged,
@@ -253,7 +264,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: TASK_UPDATED_V1,
-      handle: async (fact, { signal, deliveryCount }) => {
+      handle: async (fact, { signal }) => {
         signal.throwIfAborted();
         if (fact.changed.some((field) => ['listId', 'spaceId', 'parentKey'].includes(field))) {
           await this.invalidateScope(fact, 'task', fact.key, signal);
@@ -262,23 +273,36 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
           taskFact(TASK_UPDATED_V1, fact, { changed: fact.changed }),
           signal,
         );
+      },
+    });
+    // List notices never share a durable with an authorization invalidation: a notice that keeps
+    // failing must not latch the advisory that closes admission.
+    await this.consumers.subscribe({
+      handler: listNoticeHandlers.taskMoved,
+      deliverPolicy: 'new',
+      redelivery: invalidationRedelivery,
+      schemas: eventSchemas,
+      event: TASK_UPDATED_V1,
+      handle: async (fact, { signal, deliveryCount }) => {
         if (
-          fact.previousListId !== undefined &&
-          fact.previousListId.toLowerCase() !== fact.listId.toLowerCase()
+          fact.previousListId === undefined ||
+          fact.previousListId.toLowerCase() === fact.listId.toLowerCase()
         ) {
-          await this.listTasks.execute(
-            { ...fact, listId: fact.previousListId },
-            signal,
-            deliveryCount,
-          );
+          return;
         }
+        await this.listTasks.execute(
+          { ...fact, listId: fact.previousListId },
+          signal,
+          deliveryCount,
+        );
       },
     });
     for (const [handler, event] of [
-      ['relay-task-created', TASK_CREATED_V1],
-      ['relay-task-archived', TASK_ARCHIVED_V1],
-      ['relay-task-unarchived', TASK_UNARCHIVED_V1],
-      ['relay-task-restored', TASK_RESTORED_V1],
+      [listNoticeHandlers.taskCreated, TASK_CREATED_V1],
+      [listNoticeHandlers.taskArchived, TASK_ARCHIVED_V1],
+      [listNoticeHandlers.taskUnarchived, TASK_UNARCHIVED_V1],
+      [listNoticeHandlers.taskRestored, TASK_RESTORED_V1],
+      [listNoticeHandlers.taskTrashed, TASK_TRASHED_V1],
     ] as const) {
       await this.consumers.subscribe({
         handler,
