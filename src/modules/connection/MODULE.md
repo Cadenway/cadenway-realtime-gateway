@@ -57,6 +57,8 @@ slot, and leaving frees one. An authorized request for a new selection at capaci
   joined at handshake, finds the connections a personal notice names by account. The task-key index is written only after a stable Task UUID
   has been authorized. Redis verifies the exact lease, epoch and room while publishing a short-lived
   handoff to its owning replica. Only that replica rechecks the lease and emits to its own socket.
+  For tracked redeliveries it records the socket after emission, with a 24-hour retention; a failed
+  recording is ignored and may cause a duplicate on a later redelivery.
 - Task notices use a private Socket.IO server event to read at most 32 ready recipients per
   replica at a time after `REALTIME_PAGED_RECIPIENTS_ENABLED=true`. The coordinator advances a shared cursor only past the socket IDs covered
   by every reply. An unavailable or incompatible replica leaves the broker delivery for retry.

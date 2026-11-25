@@ -1,0 +1,189 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import type { ListTasksRelayPort } from '../../../../ports/outbound/connection/relay/list-tasks-relay.port.js';
+import { RelayConnectionsAdapter } from '../../../../../infrastructure/adapters/connection/relay/relay-connections.adapter.js';
+import { RelayListTasks } from './relay-list-tasks.use-case.js';
+
+const recipient = {
+  socketId: 'socket-a',
+  session: {
+    organizationId: 'org-a',
+    userId: 'user-a',
+    memberId: 'member-a',
+    sessionId: 'session-a',
+    sessionVersion: 1,
+    expiresAt: Date.parse('2027-11-20T12:00:00Z'),
+    role: 'member' as const,
+  },
+};
+const fact = {
+  id: '019a7005-6f7a-7b8c-9d0e-1f2a3b4c5d51',
+  organizationId: 'org-a',
+  listId: '019a7001-2b3c-7d4e-8f5a-6b7c8d9e0f12',
+};
+const signal = new AbortController().signal;
+
+function setup() {
+  const connections = {
+    listTasksNoticeId: vi
+      .fn<ListTasksRelayPort['listTasksNoticeId']>()
+      .mockImplementation((id) => new RelayConnectionsAdapter({} as never).listTasksNoticeId(id)),
+    listSubscribers: vi
+      .fn<ListTasksRelayPort['listSubscribers']>()
+      .mockImplementation(async function* () {
+        await Promise.resolve();
+        yield [
+          recipient,
+          { ...recipient, session: { ...recipient.session, organizationId: 'org-b' } },
+        ];
+      }),
+    noticeDelivered: vi.fn<ListTasksRelayPort['noticeDelivered']>().mockResolvedValue(false),
+    fence: vi.fn<ListTasksRelayPort['fence']>().mockResolvedValue('fence'),
+    authorizeList: vi.fn<ListTasksRelayPort['authorizeList']>().mockResolvedValue(true),
+    deliverListTasks: vi.fn<ListTasksRelayPort['deliverListTasks']>().mockResolvedValue(true),
+  } satisfies ListTasksRelayPort;
+  return { connections, relay: new RelayListTasks(connections) };
+}
+
+describe('RelayListTasks', () => {
+  it('sends the contract example with a stable derived id, current time and protocol version only to the list organization', async () => {
+    const { connections, relay } = setup();
+    const before = Date.now();
+    await relay.execute(fact, signal);
+    await relay.execute(fact, signal);
+    expect(connections.listSubscribers).toHaveBeenCalledWith('org-a', fact.listId, signal);
+    expect(connections.authorizeList).toHaveBeenCalledTimes(2);
+    expect(connections.authorizeList).toHaveBeenCalledWith(recipient, fact.listId, signal);
+    expect(connections.deliverListTasks).toHaveBeenCalledTimes(2);
+    const notices = connections.deliverListTasks.mock.calls.map((call) => call[3]);
+    for (const notice of notices) {
+      expect(notice).toEqual({
+        id: 'f780e4c6-ffdd-5c26-9f98-2f2494099eb8',
+        type: 'list.tasks-changed.v1',
+        at: notice.at,
+        version: 1,
+        data: { listId: fact.listId },
+      });
+      expect(Date.parse(notice.at)).toBeGreaterThanOrEqual(before);
+      expect(Date.parse(notice.at)).toBeLessThanOrEqual(Date.now());
+    }
+    expect(connections.deliverListTasks).toHaveBeenCalledWith(
+      recipient,
+      fact.listId,
+      'fence',
+      notices[0],
+      false,
+    );
+  });
+
+  it('records no retry progress on a first delivery, and tracks it on a redelivery', async () => {
+    const { connections, relay } = setup();
+    await relay.execute(fact, signal);
+    expect(connections.noticeDelivered).not.toHaveBeenCalled();
+    expect(connections.deliverListTasks.mock.calls.at(-1)?.[4]).toBe(false);
+    await relay.execute(fact, signal, 2);
+    expect(connections.noticeDelivered).toHaveBeenCalledOnce();
+    expect(connections.deliverListTasks.mock.calls.at(-1)?.[4]).toBe(true);
+  });
+
+  it('suppresses a denied recipient', async () => {
+    const { connections, relay } = setup();
+    connections.authorizeList.mockResolvedValue(false);
+    await relay.execute(fact, signal);
+    expect(connections.deliverListTasks).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unavailable decision for broker redelivery', async () => {
+    const { connections, relay } = setup();
+    connections.authorizeList.mockRejectedValue(new Error('unavailable'));
+    await expect(relay.execute(fact, signal)).rejects.toThrow('unavailable');
+    expect(connections.deliverListTasks).not.toHaveBeenCalled();
+  });
+
+  it('stops when a delivery loses its subscription without a fence change', async () => {
+    const { connections, relay } = setup();
+    connections.deliverListTasks.mockResolvedValue(false);
+    await relay.execute(fact, signal);
+    expect(connections.authorizeList).toHaveBeenCalledOnce();
+    expect(connections.fence).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a recipient with no fence', async () => {
+    const { connections, relay } = setup();
+    connections.fence.mockResolvedValue(null);
+    await relay.execute(fact, signal);
+    expect(connections.authorizeList).not.toHaveBeenCalled();
+  });
+
+  it('reauthorizes only when the fence moves and rejects repeated races', async () => {
+    const { connections, relay } = setup();
+    connections.fence
+      .mockResolvedValueOnce('1')
+      .mockResolvedValueOnce('2')
+      .mockResolvedValueOnce('2')
+      .mockResolvedValueOnce('3')
+      .mockResolvedValueOnce('3')
+      .mockResolvedValueOnce('4');
+    connections.deliverListTasks.mockResolvedValue(false);
+    await expect(relay.execute(fact, signal)).rejects.toThrow('racing');
+    expect(connections.authorizeList).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not share an expired session denial with another session of the same user', async () => {
+    const { connections, relay } = setup();
+    const expired = { ...recipient, session: { ...recipient.session, expiresAt: Date.now() + 10 } };
+    const valid = {
+      ...recipient,
+      socketId: 'socket-b',
+      session: { ...recipient.session, sessionId: 'session-b' },
+    };
+    connections.listSubscribers.mockImplementation(async function* () {
+      await Promise.resolve();
+      yield [expired, valid];
+    });
+    connections.authorizeList.mockImplementation(async (candidate) => {
+      if (candidate.socketId === expired.socketId) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return false;
+      }
+      return true;
+    });
+    await relay.execute(fact, signal);
+    expect(connections.authorizeList).toHaveBeenCalledTimes(2);
+    expect(connections.deliverListTasks).toHaveBeenCalledOnce();
+    expect(connections.deliverListTasks.mock.calls[0]?.[0]).toEqual(valid);
+  });
+
+  it('shares decisions and resumes an aborted attempt at undelivered sockets', async () => {
+    const { connections, relay } = setup();
+    const recipients = Array.from({ length: 10 }, (_, index) => ({
+      ...recipient,
+      socketId: `socket-${String(index)}`,
+    }));
+    connections.listSubscribers.mockImplementation(async function* () {
+      await Promise.resolve();
+      yield recipients;
+    });
+    const delivered = new Set<string>();
+    connections.noticeDelivered.mockImplementation((candidate) =>
+      Promise.resolve(delivered.has(candidate.socketId)),
+    );
+    const controller = new AbortController();
+    connections.authorizeList.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return true;
+    });
+    connections.deliverListTasks.mockImplementation((candidate) => {
+      delivered.add(candidate.socketId);
+      if (delivered.size === 8) controller.abort();
+      return Promise.resolve(true);
+    });
+    await expect(relay.execute(fact, controller.signal, 2)).rejects.toThrow();
+    expect(delivered.size).toBe(8);
+    expect(connections.authorizeList).toHaveBeenCalledOnce();
+    await relay.execute(fact, signal, 3);
+    expect(delivered.size).toBe(10);
+    expect(connections.deliverListTasks).toHaveBeenCalledTimes(10);
+    expect(connections.authorizeList).toHaveBeenCalledTimes(2);
+  });
+});

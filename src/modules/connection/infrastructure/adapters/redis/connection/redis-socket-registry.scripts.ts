@@ -21,6 +21,7 @@ local member = KEYS[3]
 local visibility = KEYS[4]
 local organizationLease = KEYS[5]
 local scopePrefix = KEYS[6]
+local notice = KEYS[7]
 local operation = ARGV[1]
 local identity = ARGV[2]
 local sessionVersion = tonumber(ARGV[3])
@@ -34,6 +35,7 @@ local deliveryChannel = ARGV[10]
 local encodedDelivery = ARGV[11]
 local spaceId = ARGV[12]
 local listId = ARGV[13]
+local socketId = ARGV[14]
 local limitReply = '${socketRoomLimitReply}'
 
 if operation == 'unregister' then
@@ -97,6 +99,7 @@ if operation == 'publish' then
   if epoch ~= expectedEpoch or redis.call('HEXISTS', socket, 'room:' .. room) ~= 1 then
     return false
   end
+  if notice ~= '' and redis.call('SISMEMBER', notice, socketId) == 1 then return 1 end
   local route = redis.call('HGET', socket, 'deliveryChannel')
   if not route then return 0 end
   local deadline = math.min(expiresAt, now + ${String(deliveryHandoffMs)})

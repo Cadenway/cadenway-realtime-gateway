@@ -6,6 +6,9 @@ import type { SocketRegistryPort } from './socket-registry.port.js';
 /** Shared lease, subscription and invalidation checks for authorized fan-out. */
 export interface RecipientRegistry extends Pick<SocketRegistryPort, 'readFence'> {
   // #region Methods
+  /** Checks whether this socket already received a notice in the retained window. */
+  noticeDelivered(organizationId: string, noticeId: string, socketId: string): Promise<boolean>;
+
   /** Atomically checks the current lease and publishes one notice to the owning replica. */
   publish(
     socketId: string,
@@ -13,6 +16,7 @@ export interface RecipientRegistry extends Pick<SocketRegistryPort, 'readFence'>
     fence: string,
     room: RealtimeRoom,
     packet: unknown,
+    noticeId?: string,
   ): Promise<boolean>;
 
   /** Removes an exact selector at the checked epoch. */

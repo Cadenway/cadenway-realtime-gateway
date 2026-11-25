@@ -18,7 +18,12 @@ describe('Redis socket registry command failures', () => {
   it('loads the script on Redis cache loss and keeps the exact lease command arguments', async () => {
     const evalsha = vi.fn().mockRejectedValue(new Error('NOSCRIPT No matching script.'));
     const evaluate = vi.fn().mockResolvedValue(1);
-    const registry = new RedisSocketRegistry({ eval: evaluate, evalsha, incr: vi.fn() });
+    const registry = new RedisSocketRegistry({
+      eval: evaluate,
+      evalsha,
+      incr: vi.fn(),
+      sismember: vi.fn(),
+    });
 
     expect(await registry.register('same-socket', identity)).toBe(true);
     expect(evalsha).toHaveBeenCalledTimes(1);
@@ -32,7 +37,12 @@ describe('Redis socket registry command failures', () => {
       .mockResolvedValueOnce(socketRoomLimitReply)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce('');
-    const registry = new RedisSocketRegistry({ eval: vi.fn(), evalsha, incr: vi.fn() });
+    const registry = new RedisSocketRegistry({
+      eval: vi.fn(),
+      evalsha,
+      incr: vi.fn(),
+      sismember: vi.fn(),
+    });
     const join = () =>
       registry.join('same-socket', identity, '7', { kind: 'task', taskKey: 'CAD-482' }, 'task:abc');
 
@@ -48,6 +58,7 @@ describe('Redis socket registry command failures', () => {
     const registry = new RedisSocketRegistry({
       eval: evaluate,
       evalsha,
+      sismember: vi.fn(),
       incr: vi.fn().mockRejectedValue(rejected),
     });
 

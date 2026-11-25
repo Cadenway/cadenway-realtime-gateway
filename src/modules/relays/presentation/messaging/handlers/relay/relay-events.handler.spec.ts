@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { RelayInvalidationPort } from '../../../../application/ports/outbound/connection/relay/relay-invalidation.port.js';
 import { ApplyRelayInvalidation } from '../../../../application/use-cases/commands/relay/apply-relay-invalidation/apply-relay-invalidation.use-case.js';
+import type { RelayListTasks } from '../../../../application/use-cases/commands/relay/relay-list-tasks/relay-list-tasks.use-case.js';
 import type { RelayTaskChange } from '../../../../application/use-cases/commands/relay/relay-task-change/relay-task-change.use-case.js';
 import { RelayEventsHandler } from './relay-events.handler.js';
 
@@ -11,6 +12,8 @@ interface CapturedSubscription {
   /** Durable identity and the callback supplied to the messaging kit. */
   readonly handler: string;
   readonly event: string;
+  readonly deliverPolicy?: string;
+  readonly redelivery?: { readonly maxDeliveries: number; readonly delaysMs: readonly number[] };
   readonly handle: (fact: never, context: { readonly signal: AbortSignal }) => Promise<void>;
   // #endregion
 }
@@ -32,7 +35,11 @@ function setup(gitRelaysEnabled = true) {
   } satisfies RelayInvalidationPort;
   const execute = vi.fn().mockResolvedValue(undefined);
   const changes = { execute } as unknown as RelayTaskChange;
+  const listTasksExecute = vi.fn().mockResolvedValue(undefined);
+  const listTasks = { execute: listTasksExecute } as unknown as RelayListTasks;
   return {
+    listTasks,
+    listTasksExecute,
     subscriptions,
     invalidation,
     changes,
@@ -41,6 +48,7 @@ function setup(gitRelaysEnabled = true) {
       consumers,
       new ApplyRelayInvalidation(invalidation),
       changes,
+      listTasks,
       gitRelaysEnabled,
     ),
   };
@@ -55,25 +63,26 @@ describe('RelayEventsHandler', () => {
         return Promise.resolve();
       }),
     } as unknown as EventConsumers;
-    const { invalidation, changes } = setup();
+    const { invalidation, changes, listTasks } = setup();
     const handler = new RelayEventsHandler(
       consumers,
       new ApplyRelayInvalidation(invalidation),
       changes,
+      listTasks,
     );
     await handler.onApplicationBootstrap();
-    expect(subscriptions).toHaveLength(15);
+    expect(subscriptions).toHaveLength(21);
     expect(subscriptions.some((subscription) => subscription.event.startsWith('git.'))).toBe(false);
   });
 
   it('keeps Git subscriptions disabled when explicitly switched off', async () => {
     const { handler, subscriptions } = setup(false);
     await handler.onApplicationBootstrap();
-    expect(subscriptions).toHaveLength(15);
+    expect(subscriptions).toHaveLength(21);
     expect(subscriptions.some((subscription) => subscription.event.startsWith('git.'))).toBe(false);
   });
 
-  it('registers the twenty exact durable names once', async () => {
+  it('registers the exact durable names once', async () => {
     const { handler, subscriptions } = setup();
     await handler.onApplicationBootstrap();
     expect(subscriptions.map((subscription) => [subscription.handler, subscription.event])).toEqual(
@@ -91,6 +100,12 @@ describe('RelayEventsHandler', () => {
         ['relay-task-trashed', 'task.trashed.v1'],
         ['relay-task-purged', 'task.purged.v1'],
         ['relay-task-updated', 'task.updated.v1'],
+        ['relay-task-moved-list', 'task.updated.v1'],
+        ['relay-task-created', 'task.created.v1'],
+        ['relay-task-archived', 'task.archived.v1'],
+        ['relay-task-unarchived', 'task.unarchived.v1'],
+        ['relay-task-restored', 'task.restored.v1'],
+        ['relay-task-trashed-list', 'task.trashed.v1'],
         ['relay-task-status-changed', 'task.status-changed.v1'],
         ['relay-comment-created', 'comment.created.v1'],
         ['relay-git-branch-created', 'git.branch-created.v1'],
@@ -189,12 +204,17 @@ describe('RelayEventsHandler', () => {
     ['task.trashed.v1', 'trash'],
     ['task.purged.v1', 'purge'],
   ])('routes %s exclusively to the affected task key', async (event, action) => {
-    const { handler, subscriptions, invalidation } = setup();
+    const { handler, subscriptions, invalidation, listTasksExecute } = setup();
     await handler.onApplicationBootstrap();
-    const subscription = subscriptions.find((candidate) => candidate.event === event);
+    const subscription = subscriptions.find(
+      (candidate) => candidate.event === event && !candidate.handler.endsWith('-list'),
+    );
     const signal = new AbortController().signal;
     expect(subscription).toBeDefined();
-    await subscription?.handle({ organizationId: 'ORG-A', key: 'CAD-42' } as never, { signal });
+    await subscription?.handle(
+      { id: 'event-a', organizationId: 'ORG-A', key: 'CAD-42', listId: 'list-a' } as never,
+      { signal },
+    );
     expect(invalidation.invalidateTaskRoom).toHaveBeenCalledExactlyOnceWith(
       'org-a',
       'CAD-42',
@@ -202,6 +222,94 @@ describe('RelayEventsHandler', () => {
       signal,
     );
     expect(invalidation.invalidateScope).not.toHaveBeenCalled();
+    expect(listTasksExecute).not.toHaveBeenCalled();
+  });
+
+  it('starts new list durables at new facts with the extended retry schedule', async () => {
+    const { handler, subscriptions } = setup();
+    await handler.onApplicationBootstrap();
+    for (const name of [
+      'relay-task-created',
+      'relay-task-archived',
+      'relay-task-unarchived',
+      'relay-task-restored',
+      'relay-task-trashed-list',
+      'relay-task-moved-list',
+    ]) {
+      expect(subscriptions.find((item) => item.handler === name)).toMatchObject({
+        deliverPolicy: 'new',
+        redelivery: {
+          maxDeliveries: 32,
+          delaysMs: [1000, 5000, 30000, 120000, 600000, 1800000, 3600000],
+        },
+      });
+    }
+  });
+
+  it.each([
+    'task.created.v1',
+    'task.archived.v1',
+    'task.unarchived.v1',
+    'task.restored.v1',
+    'task.trashed.v1',
+  ])('routes %s to the fact list', async (event) => {
+    const { handler, subscriptions, listTasksExecute } = setup();
+    await handler.onApplicationBootstrap();
+    const signal = new AbortController().signal;
+    const fact = { id: 'event-a', organizationId: 'org-a', listId: 'list-a', key: 'CAD-42' };
+    await subscriptions
+      .find(
+        (subscription) =>
+          subscription.event === event &&
+          (event !== 'task.trashed.v1' || subscription.handler === 'relay-task-trashed-list'),
+      )
+      ?.handle(fact as never, { signal, deliveryCount: 2 } as never);
+    expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith(fact, signal, 2);
+  });
+
+  it('sends a move notice only to the former list, from its own durable', async () => {
+    const { handler, subscriptions, listTasksExecute, execute } = setup();
+    await handler.onApplicationBootstrap();
+    const signal = new AbortController().signal;
+    const fact = {
+      id: 'event-a',
+      organizationId: 'org-a',
+      listId: 'new',
+      previousListId: 'old',
+      key: 'CAD-42',
+      spaceId: 'space',
+      version: 2,
+      occurredAt: '2026-01-01T00:00:00Z',
+      changed: ['listId'],
+    };
+    const invalidating = subscriptions.find(
+      (candidate) => candidate.handler === 'relay-task-updated',
+    );
+    await invalidating?.handle(fact as never, { signal, deliveryCount: 3 } as never);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(listTasksExecute).not.toHaveBeenCalled();
+    const subscription = subscriptions.find(
+      (candidate) => candidate.handler === 'relay-task-moved-list',
+    );
+    expect(subscription).toBeDefined();
+    await subscription?.handle(fact as never, { signal, deliveryCount: 3 } as never);
+    expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith({ ...fact, listId: 'old' }, signal, 3);
+    expect(execute).toHaveBeenCalledOnce();
+    await subscription?.handle({ ...fact, previousListId: 'new' } as never, { signal });
+    expect(listTasksExecute).toHaveBeenCalledOnce();
+    const { id, organizationId, listId, key, spaceId, version, occurredAt, changed } = fact;
+    const withoutPrevious = {
+      id,
+      organizationId,
+      listId,
+      key,
+      spaceId,
+      version,
+      occurredAt,
+      changed,
+    };
+    await subscription?.handle(withoutPrevious as never, { signal });
+    expect(listTasksExecute).toHaveBeenCalledOnce();
   });
 
   it('projects a producer status fact without its display or audience data', async () => {

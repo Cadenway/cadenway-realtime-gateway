@@ -104,14 +104,31 @@ export class ConnectionRecipients {
       : null;
   }
 
+  /** Checks shared delivery progress before repeating an authorization decision. */
+  public noticeDelivered(recipient: ConnectionRecipient, noticeId: string): Promise<boolean> {
+    return this.registry.noticeDelivered(
+      recipient.session.organizationId,
+      noticeId,
+      recipient.socketId,
+    );
+  }
+
   /** Hands off a single change only when Redis still validates its exact recipient fence. */
   public deliver(
     recipient: ConnectionRecipient,
     room: RealtimeRoom,
     fence: string,
     packet: unknown,
+    noticeId?: string,
   ): Promise<boolean> {
-    return this.registry.publish(recipient.socketId, recipient.session, fence, room, packet);
+    return this.registry.publish(
+      recipient.socketId,
+      recipient.session,
+      fence,
+      room,
+      packet,
+      noticeId,
+    );
   }
 
   /** Removes an obsolete subscription without resolving a hidden task or list. */

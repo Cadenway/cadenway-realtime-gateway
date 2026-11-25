@@ -53,6 +53,7 @@ const handoffSchema = z.strictObject({
     room: socketRoom,
     fence: z.string().regex(/^[0-9]{1,20}$/u),
     packet: z.record(z.string(), z.unknown()),
+    noticeId: z.uuid().optional(),
   }),
 });
 
@@ -84,7 +85,10 @@ export class SocketIoRecipients implements RecipientTransport {
   /** Resolves the active Socket.IO server after Nest initializes the gateway. */
   public constructor(
     private readonly server: () => Server | undefined,
-    private readonly registry: Pick<RedisSocketRegistry, 'readFence' | 'hasSubscription'>,
+    private readonly registry: Pick<
+      RedisSocketRegistry,
+      'readFence' | 'hasSubscription' | 'markNoticeDelivered'
+    >,
     private readonly available: () => boolean,
     private readonly pagedDiscovery: boolean,
   ) {}
@@ -171,7 +175,19 @@ export class SocketIoRecipients implements RecipientTransport {
     if (socket === undefined) return;
     const session = this.readySession(socket);
     if (session === null) return;
-    await this.emitLocal(socket, session, delivery.room, delivery.fence, deadline, delivery.packet);
+    const emitted = await this.emitLocal(
+      socket,
+      session,
+      delivery.room,
+      delivery.fence,
+      deadline,
+      delivery.packet,
+    );
+    if (emitted && delivery.noticeId !== undefined) {
+      await this.registry
+        .markNoticeDelivered(session.organizationId, delivery.noticeId, socket.id)
+        .catch(() => undefined);
+    }
   }
 
   /** Rechecks local socket authorization and presence freshness before emitting. */
@@ -253,8 +269,8 @@ export class SocketIoRecipients implements RecipientTransport {
     deadline: number,
     packet: unknown,
     stillCurrent?: () => boolean,
-  ): Promise<void> {
-    if (stillCurrent?.() === false || !isInLocalRoom(socket, room)) return;
+  ): Promise<boolean> {
+    if (stillCurrent?.() === false || !isInLocalRoom(socket, room)) return false;
     const allowed = await this.registry.hasSubscription(socket.id, session, fence, room);
     if (
       allowed &&
@@ -264,7 +280,9 @@ export class SocketIoRecipients implements RecipientTransport {
       Date.now() < Math.min(deadline, session.expiresAt)
     ) {
       socket.volatile.emit('change', packet);
+      return true;
     }
+    return false;
   }
 
   private readySession(socket: Socket): RealtimeSession | null {

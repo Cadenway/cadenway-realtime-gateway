@@ -51,6 +51,9 @@ function replica(
   } as unknown as Server;
   const registry = {
     readFence: vi.fn<RedisSocketRegistry['readFence']>().mockResolvedValue('4'),
+    markNoticeDelivered: vi
+      .fn<RedisSocketRegistry['markNoticeDelivered']>()
+      .mockResolvedValue(undefined),
     hasSubscription: vi.fn<RedisSocketRegistry['hasSubscription']>().mockResolvedValue(true),
   };
   const available = vi.fn(() => true);
@@ -191,6 +194,32 @@ describe('owning socket replica', () => {
     });
     await receiver.receive(handoff(target.id));
     expect(target.volatile.emit).not.toHaveBeenCalled();
+  });
+
+  it('records only emitted tracked handoffs and tolerates a recording failure', async () => {
+    const target = socket('socket');
+    const { receiver, registry } = replica([target]);
+    const noticeId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b35';
+    const tracked = (deadline = Date.now() + 5_000) => {
+      const value = JSON.parse(handoff(target.id, deadline)) as { delivery: { noticeId?: string } };
+      value.delivery.noticeId = noticeId;
+      return JSON.stringify(value);
+    };
+    await receiver.receive(tracked(Date.now()));
+    registry.hasSubscription.mockResolvedValueOnce(false);
+    await receiver.receive(tracked());
+    target.rooms.clear();
+    await receiver.receive(tracked());
+    expect(registry.markNoticeDelivered).not.toHaveBeenCalled();
+    target.rooms.add(taskRoom);
+    registry.markNoticeDelivered.mockRejectedValueOnce(new Error('Redis unavailable'));
+    await expect(receiver.receive(tracked())).resolves.toBeUndefined();
+    expect(target.volatile.emit).toHaveBeenCalledOnce();
+    expect(registry.markNoticeDelivered).toHaveBeenCalledExactlyOnceWith(
+      organizationId,
+      noticeId,
+      target.id,
+    );
   });
 
   it('uses only the local organization index and rechecks scope before presence delivery', async () => {

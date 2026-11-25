@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+
+import type { ListTasksNotice } from '../../../../application/models/relay/list-tasks-notice.model.js';
 import type { ConnectionRecipients } from '../../../../../connection/public/connection/connection-recipients.js';
 import type { PersonalNotice } from '../../../../application/models/relay/personal-notice.model.js';
 import type { PersonalNoticeSubject } from '../../../../application/models/relay/personal-notice-subject.model.js';
@@ -6,11 +9,24 @@ import type { TaskNotice } from '../../../../application/models/relay/task-notic
 import type { TaskPlacement } from '../../../../application/models/relay/task-placement.model.js';
 import type { RelayInvalidationPort } from '../../../../application/ports/outbound/connection/relay/relay-invalidation.port.js';
 import type { PersonalRelayPort } from '../../../../application/ports/outbound/connection/relay/personal-relay.port.js';
+import type { ListTasksRelayPort } from '../../../../application/ports/outbound/connection/relay/list-tasks-relay.port.js';
 import type { TaskRelayPort } from '../../../../application/ports/outbound/connection/relay/task-relay.port.js';
+
+function noticeId(factId: string): string {
+  const namespace = Buffer.from('6ba7b8119dad11d180b400c04fd430c8', 'hex');
+  const hash = createHash('sha1')
+    .update(namespace)
+    .update(`urn:cadenway:list.tasks-changed.v1:${factId}`)
+    .digest();
+  hash[6] = ((hash[6] ?? 0) & 0x0f) | 0x50;
+  hash[8] = ((hash[8] ?? 0) & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 /** Adapts relay operations to the connection capability's authorized public entry point. */
 export class RelayConnectionsAdapter
-  implements TaskRelayPort, RelayInvalidationPort, PersonalRelayPort
+  implements TaskRelayPort, RelayInvalidationPort, PersonalRelayPort, ListTasksRelayPort
 {
   // #region Constructor
   /** Binds the cluster-wide connection registry and targeted Socket.IO transport. */
@@ -36,9 +52,47 @@ export class RelayConnectionsAdapter
     return this.connections.scanList(organizationId, listId, signal);
   }
 
+  /** Checks shared progress before reauthorizing a socket. */
+  public noticeDelivered(recipient: RelayRecipient, noticeId: string): Promise<boolean> {
+    return this.connections.noticeDelivered(recipient, noticeId);
+  }
+
   /** Captures the socket's current shared fence. */
   public fence(recipient: RelayRecipient): Promise<string | null> {
     return this.connections.fence(recipient);
+  }
+
+  /** Derives the stable URL namespace UUID required by the browser contract. */
+  public listTasksNoticeId(factId: string): string {
+    return noticeId(factId);
+  }
+
+  /** Checks current list access through the same path as a room join. */
+  public async authorizeList(
+    recipient: RelayRecipient,
+    listId: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    return (
+      (await this.connections.authorized(recipient, { kind: 'list', listId }, signal)) !== null
+    );
+  }
+
+  /** Publishes the list notice only while the captured fence remains current. */
+  public deliverListTasks(
+    recipient: RelayRecipient,
+    listId: string,
+    fence: string,
+    notice: ListTasksNotice,
+    track: boolean,
+  ): Promise<boolean> {
+    return this.connections.deliver(
+      recipient,
+      `list:${listId}`,
+      fence,
+      notice,
+      track ? notice.id : undefined,
+    );
   }
 
   /** Demands Task's complete current proof; an older or hidden result is withheld. */

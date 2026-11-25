@@ -31,6 +31,7 @@ function recipient(): ConnectionRecipient {
 function fixture() {
   const registry = {
     readFence: vi.fn<RecipientRegistry['readFence']>().mockResolvedValue('5'),
+    noticeDelivered: vi.fn<RecipientRegistry['noticeDelivered']>().mockResolvedValue(false),
     publish: vi.fn<RecipientRegistry['publish']>().mockResolvedValue(true),
     evict: vi.fn<RecipientRegistry['evict']>().mockResolvedValue(null),
     markOrganizationChanged: vi
@@ -160,6 +161,22 @@ describe('ConnectionRecipients', () => {
       '5',
       room,
       packet,
+      undefined,
+    );
+    await connections.deliver(selected, room, '5', packet, 'notice');
+    expect(registry.publish).toHaveBeenLastCalledWith(
+      selected.socketId,
+      selected.session,
+      '5',
+      room,
+      packet,
+      'notice',
+    );
+    await connections.noticeDelivered(selected, 'notice');
+    expect(registry.noticeDelivered).toHaveBeenCalledWith(
+      selected.session.organizationId,
+      'notice',
+      selected.socketId,
     );
   });
 

@@ -9,6 +9,7 @@ import { RedisModule } from '../../infrastructure/redis/redis.module.js';
 import { ConnectionModule } from '../connection/connection.module.js';
 import { ConnectionRecipients } from '../connection/public/connection/connection-recipients.js';
 import { ApplyRelayInvalidation } from './application/use-cases/commands/relay/apply-relay-invalidation/apply-relay-invalidation.use-case.js';
+import { RelayListTasks } from './application/use-cases/commands/relay/relay-list-tasks/relay-list-tasks.use-case.js';
 import { RelayPersonalNotice } from './application/use-cases/commands/relay/relay-personal-notice/relay-personal-notice.use-case.js';
 import { RelayTaskChange } from './application/use-cases/commands/relay/relay-task-change/relay-task-change.use-case.js';
 import { RelayConnectionsAdapter } from './infrastructure/adapters/connection/relay/relay-connections.adapter.js';
@@ -32,6 +33,12 @@ const eventStream = 'EVENTS';
         new RelayConnectionsAdapter(connections),
     },
     {
+      provide: RelayListTasks,
+      inject: [RelayConnectionsAdapter],
+      useFactory: (connections: RelayConnectionsAdapter): RelayListTasks =>
+        new RelayListTasks(connections),
+    },
+    {
       provide: RelayTaskChange,
       inject: [RelayConnectionsAdapter],
       useFactory: (connections: RelayConnectionsAdapter): RelayTaskChange =>
@@ -45,17 +52,19 @@ const eventStream = 'EVENTS';
     },
     {
       provide: RelayEventsHandler,
-      inject: [EventConsumers, ApplyRelayInvalidation, RelayTaskChange, CONFIG],
+      inject: [EventConsumers, ApplyRelayInvalidation, RelayTaskChange, CONFIG, RelayListTasks],
       useFactory: (
         consumers: EventConsumers,
         invalidation: ApplyRelayInvalidation,
         changes: RelayTaskChange,
         config: AppConfig,
+        listTasks: RelayListTasks,
       ): RelayEventsHandler =>
         new RelayEventsHandler(
           consumers,
           invalidation,
           changes,
+          listTasks,
           config.REALTIME_GIT_RELAYS_ENABLED,
         ),
     },

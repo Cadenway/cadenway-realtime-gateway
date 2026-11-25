@@ -23,8 +23,29 @@ only a stable task ID and changed field names. A comment packet carries only tas
 ## Events consumed
 
 Session revocation and organization switches, membership removal and role changes, space and list
-visibility and deletion, task update, status, trash and purge, and comment creation use the
+visibility and deletion, task creation, update, status, archive, unarchive, trash, restore and purge, and comment creation use the
 individual versioned durables in the published realtime contract.
+
+Task creation, archive, unarchive, trash and restore send `list.tasks-changed.v1` to the
+fact's list; an update with a different `previousListId` sends it to the former list. These
+notices have durables of their own, never shared with an authorization invalidation, so a notice
+that keeps failing never latches the advisory that closes admission:
+`realtime-gateway__relay-task-created`, `realtime-gateway__relay-task-archived`,
+`realtime-gateway__relay-task-unarchived`, `realtime-gateway__relay-task-restored`,
+`realtime-gateway__relay-task-trashed-list` and `realtime-gateway__relay-task-moved-list` (the
+last two beside the `relay-task-trashed` and `relay-task-updated` invalidations). The notice
+contains only `{ listId }`, the browser protocol version and a UUID v5 derived from the fact ID.
+Each candidate must pass current list room authorization and an unchanged session and visibility
+fence; unavailable decisions reject the attempt for redelivery. These six durables start with
+`deliverPolicy: new` when first created; changing the setting does not reposition an existing
+durable. They use the extended invalidation redelivery schedule (32 deliveries with delays up to
+one hour). From the second delivery of a fact on, Connection records each socket served in a
+Redis set per notice, kept 24 hours, so a later redelivery skips completed handoffs; a first
+delivery records nothing, so the sets exist only for retried facts. Sockets served again (by the
+first redelivery, or after the 24 hours) are deduplicated by clients through the notice id. Recording follows emission on the owning replica and is best-effort; browser transport remains
+volatile. List decisions are shared per session, session version, role and visibility fence within a fact, while each
+socket retains its own fence through delivery. A failed handoff stops when the fence is absent or
+unchanged and retries authorization only when it moved.
 
 The five Git branch, pull request and checks facts produce `git.links-changed.v1` notices.
 Each notice carries only the current authorized task ID and uses browser protocol version 1.

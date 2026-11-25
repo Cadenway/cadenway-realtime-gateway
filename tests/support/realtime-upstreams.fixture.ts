@@ -7,6 +7,7 @@ export const organizationId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b2f';
 export const otherOrganizationId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b99';
 export const spaceId = '019a7000-1a2b-7c3d-8e4f-5a6b7c8d9e01';
 export const listId = '019a7001-2b3c-7d4e-8f5a-6b7c8d9e0f12';
+export const otherListId = '019a7001-2b3c-7d4e-8f5a-6b7c8d9e0f13';
 export const taskId = '019a7002-3c4d-7e5f-8a6b-7c8d9e0f1a23';
 export const taskKey = 'CAD-482';
 
@@ -83,6 +84,11 @@ export class RealtimeUpstreams {
       this.memberships.set(`${source.organizationId}:${session.userId}`, source.memberId);
     }
     if (canRead) this.allowed.add(session.userId);
+  }
+
+  /** Removes current Task access after a room was joined. */
+  public denyTaskAccess(userId: string): void {
+    this.allowed.delete(userId);
   }
 
   public revokeMembership(organization: string, userId: string): void {
@@ -194,8 +200,13 @@ export class RealtimeUpstreams {
         send(200, { role: 'edit', spaceId, listId, taskId, taskKey });
         return;
       }
-      if (request.url === `/internal/v1/lists/${listId}/access`) {
-        send(200, { role: 'edit', spaceId, listId, taskKey: null });
+      if (
+        request.url === `/internal/v1/lists/${listId}/access` ||
+        request.url === `/internal/v1/lists/${otherListId}/access`
+      ) {
+        const selectedList =
+          request.url === `/internal/v1/lists/${listId}/access` ? listId : otherListId;
+        send(200, { role: 'edit', spaceId, listId: selectedList, taskKey: null });
         return;
       }
       if (

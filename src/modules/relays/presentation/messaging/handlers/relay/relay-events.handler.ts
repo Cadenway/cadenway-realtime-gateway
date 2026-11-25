@@ -15,6 +15,10 @@ import {
   SPACE_ACCESS_REPUBLISHED_V1,
   SPACE_DELETED_V1,
   SPACE_UPDATED_V1,
+  TASK_CREATED_V1,
+  TASK_ARCHIVED_V1,
+  TASK_UNARCHIVED_V1,
+  TASK_RESTORED_V1,
   TASK_PURGED_V1,
   TASK_STATUS_CHANGED_V1,
   TASK_TRASHED_V1,
@@ -24,6 +28,7 @@ import {
 import type { EventConsumers, EventRedelivery } from '@cadenway/nest-messaging';
 import type { OnApplicationBootstrap } from '@nestjs/common';
 
+import type { RelayListTasks } from '../../../../application/use-cases/commands/relay/relay-list-tasks/relay-list-tasks.use-case.js';
 import type { TaskRelayFact } from '../../../../application/models/relay/task-relay-fact.model.js';
 import type { ApplyRelayInvalidation } from '../../../../application/use-cases/commands/relay/apply-relay-invalidation/apply-relay-invalidation.use-case.js';
 import type { RelayTaskChange } from '../../../../application/use-cases/commands/relay/relay-task-change/relay-task-change.use-case.js';
@@ -43,6 +48,19 @@ export const relayInvalidationHandlers = {
   taskTrashed: 'relay-task-trashed',
   taskPurged: 'relay-task-purged',
   taskUpdated: 'relay-task-updated',
+} as const;
+
+/**
+ * Durables that only send `list.tasks-changed.v1`, apart from the authorization invalidations: they
+ * start at new facts and never gate admission.
+ */
+export const listNoticeHandlers = {
+  taskCreated: 'relay-task-created',
+  taskArchived: 'relay-task-archived',
+  taskUnarchived: 'relay-task-unarchived',
+  taskRestored: 'relay-task-restored',
+  taskTrashed: 'relay-task-trashed-list',
+  taskMoved: 'relay-task-moved-list',
 } as const;
 
 // Authorization markers must survive an extended Redis outage while JetStream keeps the fact.
@@ -81,6 +99,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     private readonly consumers: EventConsumers,
     private readonly invalidation: ApplyRelayInvalidation,
     private readonly changes: RelayTaskChange,
+    private readonly listTasks: RelayListTasks,
     private readonly gitRelaysEnabled = false,
   ) {}
   // #endregion
@@ -256,6 +275,46 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
         );
       },
     });
+    // List notices never share a durable with an authorization invalidation: a notice that keeps
+    // failing must not latch the advisory that closes admission.
+    await this.consumers.subscribe({
+      handler: listNoticeHandlers.taskMoved,
+      deliverPolicy: 'new',
+      redelivery: invalidationRedelivery,
+      schemas: eventSchemas,
+      event: TASK_UPDATED_V1,
+      handle: async (fact, { signal, deliveryCount }) => {
+        if (
+          fact.previousListId === undefined ||
+          fact.previousListId.toLowerCase() === fact.listId.toLowerCase()
+        ) {
+          return;
+        }
+        await this.listTasks.execute(
+          { ...fact, listId: fact.previousListId },
+          signal,
+          deliveryCount,
+        );
+      },
+    });
+    for (const [handler, event] of [
+      [listNoticeHandlers.taskCreated, TASK_CREATED_V1],
+      [listNoticeHandlers.taskArchived, TASK_ARCHIVED_V1],
+      [listNoticeHandlers.taskUnarchived, TASK_UNARCHIVED_V1],
+      [listNoticeHandlers.taskRestored, TASK_RESTORED_V1],
+      [listNoticeHandlers.taskTrashed, TASK_TRASHED_V1],
+    ] as const) {
+      await this.consumers.subscribe({
+        handler,
+        deliverPolicy: 'new',
+        redelivery: invalidationRedelivery,
+        schemas: eventSchemas,
+        event,
+        handle: async (fact, { signal, deliveryCount }) => {
+          await this.listTasks.execute(fact, signal, deliveryCount);
+        },
+      });
+    }
     await this.consumers.subscribe({
       handler: 'relay-task-status-changed',
       schemas: eventSchemas,
