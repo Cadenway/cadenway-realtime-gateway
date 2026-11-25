@@ -35,9 +35,10 @@ Each candidate must pass current list room authorization and an unchanged sessio
 fence; unavailable decisions reject the attempt for redelivery. These four durables start with
 `deliverPolicy: new` when first created; changing the setting does not reposition an existing
 durable. They use the extended invalidation redelivery schedule (32 deliveries with delays up to
-one hour). For each notice, Connection retains delivered socket IDs in Redis for 24 hours, so a
-redelivery skips completed handoffs; a later one serves them again, which clients deduplicate by
-notice id. Delivery and recording are atomic; browser transport remains
+one hour). From the second delivery of a fact on, Connection records each socket served in a
+Redis set per notice, kept 24 hours, so a later redelivery skips completed handoffs; a first
+delivery records nothing, so the sets exist only for retried facts. Sockets served again (by the
+first redelivery, or after the 24 hours) are deduplicated by clients through the notice id. Delivery and recording are atomic; browser transport remains
 volatile. List decisions are shared per user, role and visibility fence within a fact, while each
 socket retains its own fence through delivery. A failed handoff stops when the fence is absent or
 unchanged and retries authorization only when it moved.

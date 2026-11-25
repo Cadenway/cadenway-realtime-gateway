@@ -219,7 +219,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: TASK_TRASHED_V1,
-      handle: async (fact, { signal }) => {
+      handle: async (fact, { signal, deliveryCount }) => {
         await this.invalidation.execute(
           {
             kind: 'task-room',
@@ -229,7 +229,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
           },
           signal,
         );
-        await this.listTasks.execute(fact, signal);
+        await this.listTasks.execute(fact, signal, deliveryCount);
       },
     });
     await this.consumers.subscribe({
@@ -253,7 +253,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: TASK_UPDATED_V1,
-      handle: async (fact, { signal }) => {
+      handle: async (fact, { signal, deliveryCount }) => {
         signal.throwIfAborted();
         if (fact.changed.some((field) => ['listId', 'spaceId', 'parentKey'].includes(field))) {
           await this.invalidateScope(fact, 'task', fact.key, signal);
@@ -266,7 +266,11 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
           fact.previousListId !== undefined &&
           fact.previousListId.toLowerCase() !== fact.listId.toLowerCase()
         ) {
-          await this.listTasks.execute({ ...fact, listId: fact.previousListId }, signal);
+          await this.listTasks.execute(
+            { ...fact, listId: fact.previousListId },
+            signal,
+            deliveryCount,
+          );
         }
       },
     });
@@ -282,8 +286,8 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
         redelivery: invalidationRedelivery,
         schemas: eventSchemas,
         event,
-        handle: async (fact, { signal }) => {
-          await this.listTasks.execute(fact, signal);
+        handle: async (fact, { signal, deliveryCount }) => {
+          await this.listTasks.execute(fact, signal, deliveryCount);
         },
       });
     }

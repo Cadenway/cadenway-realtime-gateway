@@ -252,8 +252,8 @@ describe('RelayEventsHandler', () => {
     const fact = { id: 'event-a', organizationId: 'org-a', listId: 'list-a', key: 'CAD-42' };
     await subscriptions
       .find((subscription) => subscription.event === event)
-      ?.handle(fact as never, { signal });
-    expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith(fact, signal);
+      ?.handle(fact as never, { signal, deliveryCount: 2 } as never);
+    expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith(fact, signal, 2);
   });
 
   it('sends a move notice only to the former list', async () => {
@@ -273,8 +273,8 @@ describe('RelayEventsHandler', () => {
     };
     const subscription = subscriptions.find((candidate) => candidate.event === 'task.updated.v1');
     expect(subscription).toBeDefined();
-    await subscription?.handle(fact as never, { signal });
-    expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith({ ...fact, listId: 'old' }, signal);
+    await subscription?.handle(fact as never, { signal, deliveryCount: 3 } as never);
+    expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith({ ...fact, listId: 'old' }, signal, 3);
     expect(execute).toHaveBeenCalledOnce();
     await subscription?.handle({ ...fact, previousListId: 'new' } as never, { signal });
     expect(listTasksExecute).toHaveBeenCalledOnce();

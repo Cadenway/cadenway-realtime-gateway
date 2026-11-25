@@ -72,7 +72,18 @@ describe('RelayListTasks', () => {
       fact.listId,
       'fence',
       notices[0],
+      false,
     );
+  });
+
+  it('records no retry progress on a first delivery, and tracks it on a redelivery', async () => {
+    const { connections, relay } = setup();
+    await relay.execute(fact, signal);
+    expect(connections.noticeDelivered).not.toHaveBeenCalled();
+    expect(connections.deliverListTasks.mock.calls.at(-1)?.[4]).toBe(false);
+    await relay.execute(fact, signal, 2);
+    expect(connections.noticeDelivered).toHaveBeenCalledOnce();
+    expect(connections.deliverListTasks.mock.calls.at(-1)?.[4]).toBe(true);
   });
 
   it('suppresses a denied recipient', async () => {
@@ -142,10 +153,10 @@ describe('RelayListTasks', () => {
       if (delivered.size === 8) controller.abort();
       return Promise.resolve(true);
     });
-    await expect(relay.execute(fact, controller.signal)).rejects.toThrow();
+    await expect(relay.execute(fact, controller.signal, 2)).rejects.toThrow();
     expect(delivered.size).toBe(8);
     expect(connections.authorizeList).toHaveBeenCalledOnce();
-    await relay.execute(fact, signal);
+    await relay.execute(fact, signal, 3);
     expect(delivered.size).toBe(10);
     expect(connections.deliverListTasks).toHaveBeenCalledTimes(10);
     expect(connections.authorizeList).toHaveBeenCalledTimes(2);

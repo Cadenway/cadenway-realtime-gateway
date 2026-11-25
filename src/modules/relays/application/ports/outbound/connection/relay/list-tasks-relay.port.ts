@@ -23,12 +23,16 @@ export interface ListTasksRelayPort {
   /** Checks the same list access used for joining a room. */
   authorizeList(recipient: RelayRecipient, listId: string, signal: AbortSignal): Promise<boolean>;
 
-  /** Publishes only while the captured fence and subscription remain current. */
+  /**
+   * Publishes only while the captured fence and subscription remain current. With `track`,
+   * records the handoff so that a redelivery of the notice skips it.
+   */
   deliverListTasks(
     recipient: RelayRecipient,
     listId: string,
     fence: string,
     notice: ListTasksNotice,
+    track: boolean,
   ): Promise<boolean>;
   // #endregion
 }

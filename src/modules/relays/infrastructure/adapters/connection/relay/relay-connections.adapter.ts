@@ -84,8 +84,15 @@ export class RelayConnectionsAdapter
     listId: string,
     fence: string,
     notice: ListTasksNotice,
+    track: boolean,
   ): Promise<boolean> {
-    return this.connections.deliver(recipient, `list:${listId}`, fence, notice, notice.id);
+    return this.connections.deliver(
+      recipient,
+      `list:${listId}`,
+      fence,
+      notice,
+      track ? notice.id : undefined,
+    );
   }
 
   /** Demands Task's complete current proof; an older or hidden result is withheld. */
