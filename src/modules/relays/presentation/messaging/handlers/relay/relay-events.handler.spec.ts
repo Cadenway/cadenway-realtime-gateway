@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { RelayInvalidationPort } from '../../../../application/ports/outbound/connection/relay/relay-invalidation.port.js';
 import { ApplyRelayInvalidation } from '../../../../application/use-cases/commands/relay/apply-relay-invalidation/apply-relay-invalidation.use-case.js';
+import type { RelayListTasks } from '../../../../application/use-cases/commands/relay/relay-list-tasks/relay-list-tasks.use-case.js';
 import type { RelayTaskChange } from '../../../../application/use-cases/commands/relay/relay-task-change/relay-task-change.use-case.js';
 import { RelayEventsHandler } from './relay-events.handler.js';
 
@@ -32,7 +33,11 @@ function setup(gitRelaysEnabled = true) {
   } satisfies RelayInvalidationPort;
   const execute = vi.fn().mockResolvedValue(undefined);
   const changes = { execute } as unknown as RelayTaskChange;
+  const listTasksExecute = vi.fn().mockResolvedValue(undefined);
+  const listTasks = { execute: listTasksExecute } as unknown as RelayListTasks;
   return {
+    listTasks,
+    listTasksExecute,
     subscriptions,
     invalidation,
     changes,
@@ -41,6 +46,7 @@ function setup(gitRelaysEnabled = true) {
       consumers,
       new ApplyRelayInvalidation(invalidation),
       changes,
+      listTasks,
       gitRelaysEnabled,
     ),
   };
@@ -55,25 +61,26 @@ describe('RelayEventsHandler', () => {
         return Promise.resolve();
       }),
     } as unknown as EventConsumers;
-    const { invalidation, changes } = setup();
+    const { invalidation, changes, listTasks } = setup();
     const handler = new RelayEventsHandler(
       consumers,
       new ApplyRelayInvalidation(invalidation),
       changes,
+      listTasks,
     );
     await handler.onApplicationBootstrap();
-    expect(subscriptions).toHaveLength(15);
+    expect(subscriptions).toHaveLength(19);
     expect(subscriptions.some((subscription) => subscription.event.startsWith('git.'))).toBe(false);
   });
 
   it('keeps Git subscriptions disabled when explicitly switched off', async () => {
     const { handler, subscriptions } = setup(false);
     await handler.onApplicationBootstrap();
-    expect(subscriptions).toHaveLength(15);
+    expect(subscriptions).toHaveLength(19);
     expect(subscriptions.some((subscription) => subscription.event.startsWith('git.'))).toBe(false);
   });
 
-  it('registers the twenty exact durable names once', async () => {
+  it('registers the exact durable names once', async () => {
     const { handler, subscriptions } = setup();
     await handler.onApplicationBootstrap();
     expect(subscriptions.map((subscription) => [subscription.handler, subscription.event])).toEqual(
@@ -91,6 +98,10 @@ describe('RelayEventsHandler', () => {
         ['relay-task-trashed', 'task.trashed.v1'],
         ['relay-task-purged', 'task.purged.v1'],
         ['relay-task-updated', 'task.updated.v1'],
+        ['relay-task-created', 'task.created.v1'],
+        ['relay-task-archived', 'task.archived.v1'],
+        ['relay-task-unarchived', 'task.unarchived.v1'],
+        ['relay-task-restored', 'task.restored.v1'],
         ['relay-task-status-changed', 'task.status-changed.v1'],
         ['relay-comment-created', 'comment.created.v1'],
         ['relay-git-branch-created', 'git.branch-created.v1'],
@@ -194,7 +205,10 @@ describe('RelayEventsHandler', () => {
     const subscription = subscriptions.find((candidate) => candidate.event === event);
     const signal = new AbortController().signal;
     expect(subscription).toBeDefined();
-    await subscription?.handle({ organizationId: 'ORG-A', key: 'CAD-42' } as never, { signal });
+    await subscription?.handle(
+      { id: 'event-a', organizationId: 'ORG-A', key: 'CAD-42', listId: 'list-a' } as never,
+      { signal },
+    );
     expect(invalidation.invalidateTaskRoom).toHaveBeenCalledExactlyOnceWith(
       'org-a',
       'CAD-42',
@@ -202,6 +216,47 @@ describe('RelayEventsHandler', () => {
       signal,
     );
     expect(invalidation.invalidateScope).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'task.created.v1',
+    'task.archived.v1',
+    'task.unarchived.v1',
+    'task.restored.v1',
+    'task.trashed.v1',
+  ])('routes %s to the fact list', async (event) => {
+    const { handler, subscriptions, listTasksExecute } = setup();
+    await handler.onApplicationBootstrap();
+    const signal = new AbortController().signal;
+    const fact = { id: 'event-a', organizationId: 'org-a', listId: 'list-a', key: 'CAD-42' };
+    await subscriptions
+      .find((subscription) => subscription.event === event)
+      ?.handle(fact as never, { signal });
+    expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith(fact, signal);
+  });
+
+  it('sends a move notice only to the former list', async () => {
+    const { handler, subscriptions, listTasksExecute, execute } = setup();
+    await handler.onApplicationBootstrap();
+    const signal = new AbortController().signal;
+    const fact = {
+      id: 'event-a',
+      organizationId: 'org-a',
+      listId: 'new',
+      previousListId: 'old',
+      key: 'CAD-42',
+      spaceId: 'space',
+      version: 2,
+      occurredAt: '2026-01-01T00:00:00Z',
+      changed: ['listId'],
+    };
+    const subscription = subscriptions.find((candidate) => candidate.event === 'task.updated.v1');
+    expect(subscription).toBeDefined();
+    await subscription?.handle(fact as never, { signal });
+    expect(listTasksExecute).toHaveBeenCalledExactlyOnceWith({ ...fact, listId: 'old' }, signal);
+    expect(execute).toHaveBeenCalledOnce();
+    await subscription?.handle({ ...fact, previousListId: 'new' } as never, { signal });
+    expect(listTasksExecute).toHaveBeenCalledOnce();
   });
 
   it('projects a producer status fact without its display or audience data', async () => {

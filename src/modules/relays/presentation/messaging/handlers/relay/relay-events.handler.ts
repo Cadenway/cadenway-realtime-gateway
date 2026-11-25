@@ -15,6 +15,10 @@ import {
   SPACE_ACCESS_REPUBLISHED_V1,
   SPACE_DELETED_V1,
   SPACE_UPDATED_V1,
+  TASK_CREATED_V1,
+  TASK_ARCHIVED_V1,
+  TASK_UNARCHIVED_V1,
+  TASK_RESTORED_V1,
   TASK_PURGED_V1,
   TASK_STATUS_CHANGED_V1,
   TASK_TRASHED_V1,
@@ -24,6 +28,7 @@ import {
 import type { EventConsumers, EventRedelivery } from '@cadenway/nest-messaging';
 import type { OnApplicationBootstrap } from '@nestjs/common';
 
+import type { RelayListTasks } from '../../../../application/use-cases/commands/relay/relay-list-tasks/relay-list-tasks.use-case.js';
 import type { TaskRelayFact } from '../../../../application/models/relay/task-relay-fact.model.js';
 import type { ApplyRelayInvalidation } from '../../../../application/use-cases/commands/relay/apply-relay-invalidation/apply-relay-invalidation.use-case.js';
 import type { RelayTaskChange } from '../../../../application/use-cases/commands/relay/relay-task-change/relay-task-change.use-case.js';
@@ -81,6 +86,7 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
     private readonly consumers: EventConsumers,
     private readonly invalidation: ApplyRelayInvalidation,
     private readonly changes: RelayTaskChange,
+    private readonly listTasks: RelayListTasks,
     private readonly gitRelaysEnabled = false,
   ) {}
   // #endregion
@@ -213,8 +219,8 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       redelivery: invalidationRedelivery,
       schemas: eventSchemas,
       event: TASK_TRASHED_V1,
-      handle: (fact, { signal }) =>
-        this.invalidation.execute(
+      handle: async (fact, { signal }) => {
+        await this.invalidation.execute(
           {
             kind: 'task-room',
             organizationId: fact.organizationId.toLowerCase(),
@@ -222,7 +228,9 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
             action: 'trash',
           },
           signal,
-        ),
+        );
+        await this.listTasks.execute(fact, signal);
+      },
     });
     await this.consumers.subscribe({
       handler: relayInvalidationHandlers.taskPurged,
@@ -254,8 +262,29 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
           taskFact(TASK_UPDATED_V1, fact, { changed: fact.changed }),
           signal,
         );
+        if (
+          fact.previousListId !== undefined &&
+          fact.previousListId.toLowerCase() !== fact.listId.toLowerCase()
+        ) {
+          await this.listTasks.execute({ ...fact, listId: fact.previousListId }, signal);
+        }
       },
     });
+    for (const [handler, event] of [
+      ['relay-task-created', TASK_CREATED_V1],
+      ['relay-task-archived', TASK_ARCHIVED_V1],
+      ['relay-task-unarchived', TASK_UNARCHIVED_V1],
+      ['relay-task-restored', TASK_RESTORED_V1],
+    ] as const) {
+      await this.consumers.subscribe({
+        handler,
+        schemas: eventSchemas,
+        event,
+        handle: async (fact, { signal }) => {
+          await this.listTasks.execute(fact, signal);
+        },
+      });
+    }
     await this.consumers.subscribe({
       handler: 'relay-task-status-changed',
       schemas: eventSchemas,

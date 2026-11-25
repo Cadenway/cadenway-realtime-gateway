@@ -23,8 +23,16 @@ only a stable task ID and changed field names. A comment packet carries only tas
 ## Events consumed
 
 Session revocation and organization switches, membership removal and role changes, space and list
-visibility and deletion, task update, status, trash and purge, and comment creation use the
+visibility and deletion, task creation, update, status, archive, unarchive, trash, restore and purge, and comment creation use the
 individual versioned durables in the published realtime contract.
+
+Task creation, archive, unarchive, trash and restore send `list.tasks-changed.v1` to the
+fact's list; an update with a different `previousListId` sends it to the former list. The new
+consumers use `realtime-gateway__relay-task-created`, `realtime-gateway__relay-task-archived`,
+`realtime-gateway__relay-task-unarchived` and `realtime-gateway__relay-task-restored`. The notice
+contains only `{ listId }`, the browser protocol version and a UUID v5 derived from the fact ID.
+Each candidate must pass current list room authorization and an unchanged session and visibility
+fence; unavailable decisions reject the attempt for redelivery.
 
 The five Git branch, pull request and checks facts produce `git.links-changed.v1` notices.
 Each notice carries only the current authorized task ID and uses browser protocol version 1.
