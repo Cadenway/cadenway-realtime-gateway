@@ -38,8 +38,8 @@ durable. They use the extended invalidation redelivery schedule (32 deliveries w
 one hour). From the second delivery of a fact on, Connection records each socket served in a
 Redis set per notice, kept 24 hours, so a later redelivery skips completed handoffs; a first
 delivery records nothing, so the sets exist only for retried facts. Sockets served again (by the
-first redelivery, or after the 24 hours) are deduplicated by clients through the notice id. Delivery and recording are atomic; browser transport remains
-volatile. List decisions are shared per user, role and visibility fence within a fact, while each
+first redelivery, or after the 24 hours) are deduplicated by clients through the notice id. Recording follows emission on the owning replica and is best-effort; browser transport remains
+volatile. List decisions are shared per session, session version, role and visibility fence within a fact, while each
 socket retains its own fence through delivery. A failed handoff stops when the fence is absent or
 unchanged and retries authorization only when it moved.
 

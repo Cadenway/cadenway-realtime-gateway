@@ -35,13 +35,23 @@ export class RelayListTasks {
               const fence = await this.connections.fence(recipient);
               signal.throwIfAborted();
               if (fence === null) return;
-              const key = JSON.stringify([recipient.session.userId, recipient.session.role, fence]);
+              const key = JSON.stringify([
+                recipient.session.sessionId,
+                recipient.session.sessionVersion,
+                recipient.session.role,
+                fence,
+              ]);
               let decision = decisions.get(key);
               if (decision === undefined) {
                 decision = this.connections.authorizeList(recipient, listId, signal);
                 decisions.set(key, decision);
               }
-              if (!(await decision)) return;
+              const allowed = await decision;
+              if (Date.now() >= recipient.session.expiresAt) {
+                if (decisions.get(key) === decision) decisions.delete(key);
+                return;
+              }
+              if (!allowed) return;
               signal.throwIfAborted();
               const notice: ListTasksNotice = {
                 id,

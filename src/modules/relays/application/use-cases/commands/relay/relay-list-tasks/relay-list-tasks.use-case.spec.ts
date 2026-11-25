@@ -129,6 +129,31 @@ describe('RelayListTasks', () => {
     expect(connections.authorizeList).toHaveBeenCalledTimes(3);
   });
 
+  it('does not share an expired session denial with another session of the same user', async () => {
+    const { connections, relay } = setup();
+    const expired = { ...recipient, session: { ...recipient.session, expiresAt: Date.now() + 10 } };
+    const valid = {
+      ...recipient,
+      socketId: 'socket-b',
+      session: { ...recipient.session, sessionId: 'session-b' },
+    };
+    connections.listSubscribers.mockImplementation(async function* () {
+      await Promise.resolve();
+      yield [expired, valid];
+    });
+    connections.authorizeList.mockImplementation(async (candidate) => {
+      if (candidate.socketId === expired.socketId) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return false;
+      }
+      return true;
+    });
+    await relay.execute(fact, signal);
+    expect(connections.authorizeList).toHaveBeenCalledTimes(2);
+    expect(connections.deliverListTasks).toHaveBeenCalledOnce();
+    expect(connections.deliverListTasks.mock.calls[0]?.[0]).toEqual(valid);
+  });
+
   it('shares decisions and resumes an aborted attempt at undelivered sockets', async () => {
     const { connections, relay } = setup();
     const recipients = Array.from({ length: 10 }, (_, index) => ({

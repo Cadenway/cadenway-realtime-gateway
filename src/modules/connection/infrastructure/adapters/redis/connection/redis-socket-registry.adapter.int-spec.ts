@@ -2,12 +2,14 @@ import { ResilientRedisClient } from '@cadenway/nest-common/redis';
 import { metrics } from '@opentelemetry/api';
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
 import { randomUUID } from 'node:crypto';
+import type { Server } from 'socket.io';
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { RealtimeAdmissionGates } from '../../../../../../infrastructure/redis/realtime-admission-gates.js';
 import type { RealtimeRoom } from '../../../../application/models/connection/realtime-room.model.js';
 import type { RealtimeSession } from '../../../../application/models/connection/realtime-session.model.js';
+import { SocketIoRecipients } from '../../socket-io/connection/socket-io-recipients.adapter.js';
 import { RedisRelayInbox } from './redis-relay-inbox.adapter.js';
 import { RedisSocketRegistry } from './redis-socket-registry.adapter.js';
 
@@ -292,6 +294,8 @@ describe('Redis socket registry across two gateway instances', () => {
     const noticeId = randomUUID();
     expect(await second.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(false);
     expect(await second.publish(socketId, session, current, room, packet, noticeId)).toBe(true);
+    expect(await first.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(false);
+    await first.markNoticeDelivered(session.organizationId, noticeId, socketId);
     expect(await first.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(true);
     expect(await second.noticeDelivered(randomUUID(), noticeId, socketId)).toBe(false);
     expect(await second.publish(socketId, session, current, room, packet, noticeId)).toBe(true);
@@ -307,6 +311,81 @@ describe('Redis socket registry across two gateway instances', () => {
     await first.markSessionRevoked(session.sessionId, 2);
     expect(await second.publish(socketId, session, current, room, packet)).toBe(false);
     expect(captured).toHaveBeenCalledOnce();
+  });
+
+  it('records only owner emissions so discarded handoffs can be redelivered', async () => {
+    if (redis === undefined) throw new Error('Missing Redis fixture.');
+    const listener = new ResilientRedisClient(redis.getConnectionUrl(), {
+      enableOfflineQueue: false,
+      lazyConnect: true,
+      reportOutages: false,
+    });
+    clients.push(listener);
+    await listener.connect();
+    await listener.subscribe(first.deliveryChannel);
+    const captured = vi.fn<(channel: string, packet: string) => void>();
+    listener.on('message', captured);
+    const session = verifiedSession();
+    const socketId = randomUUID();
+    const room = `list:${randomUUID()}` as const;
+    const listId = room.slice(5);
+    const socket = {
+      id: socketId,
+      connected: true,
+      rooms: new Set([room]),
+      data: { realtimeReady: true, realtimeSession: session },
+      volatile: { emit: vi.fn() },
+    };
+    const server = { sockets: { sockets: new Map([[socketId, socket]]) } } as unknown as Server;
+    const receiver = new SocketIoRecipients(
+      () => server,
+      first,
+      () => true,
+      false,
+    );
+    await first.register(socketId, session);
+    let fence = await currentEpoch(first, socketId, session);
+    await first.join(socketId, session, fence, { kind: 'list', listId }, room);
+    const noticeId = randomUUID();
+    const send = async () => {
+      const count = captured.mock.calls.length;
+      expect(
+        await second.publish(
+          socketId,
+          session,
+          fence,
+          room,
+          { type: 'list.tasks-changed.v1' },
+          noticeId,
+        ),
+      ).toBe(true);
+      await vi.waitFor(() => {
+        expect(captured).toHaveBeenCalledTimes(count + 1);
+      });
+      const message = captured.mock.calls[count]?.[1];
+      if (message === undefined) throw new Error('Missing handoff.');
+      return message;
+    };
+    const expired = JSON.parse(await send()) as { deadline: number };
+    expired.deadline = Date.now() - 1;
+    await receiver.receive(JSON.stringify(expired));
+    expect(await second.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(false);
+    const stale = await send();
+    await second.advanceVisibility(session.organizationId);
+    await receiver.receive(stale);
+    expect(await second.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(false);
+    fence = await currentEpoch(first, socketId, session);
+    const absent = await send();
+    socket.rooms.clear();
+    await receiver.receive(absent);
+    expect(await second.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(false);
+    socket.rooms.add(room);
+    await receiver.receive(await send());
+    expect(socket.volatile.emit).toHaveBeenCalledOnce();
+    expect(await second.noticeDelivered(session.organizationId, noticeId, socketId)).toBe(true);
+    const count = captured.mock.calls.length;
+    expect(await second.publish(socketId, session, fence, room, {}, noticeId)).toBe(true);
+    expect(captured).toHaveBeenCalledTimes(count);
   });
 
   it('counts each dropped owner handoff at capacity and admits new handoffs when checks finish', async () => {

@@ -4,9 +4,6 @@ import { socketAuthorityLua } from '../../../../../../infrastructure/redis/realt
 const markerWindowMs = (30 * 24 * 60 * 60 + 60) * 1_000;
 const maximumResourceRooms = 32;
 const deliveryHandoffMs = 5_000;
-// A notice's delivery set only lets a redelivery skip the sockets already served: an expired set
-// makes a later redelivery serve them again, which clients deduplicate by notice id.
-const noticeDeliveryRetentionMs = 24 * 60 * 60 * 1_000;
 
 /** Redis reply for a join refused because the socket already holds its resource room limit. */
 export const socketRoomLimitReply = 'limit-reached';
@@ -106,13 +103,8 @@ if operation == 'publish' then
   local route = redis.call('HGET', socket, 'deliveryChannel')
   if not route then return 0 end
   local deadline = math.min(expiresAt, now + ${String(deliveryHandoffMs)})
-  local published = redis.call('PUBLISH', route,
+  return redis.call('PUBLISH', route,
     '{"deadline":' .. tostring(deadline) .. ',"delivery":' .. encodedDelivery .. '}')
-  if published > 0 and notice ~= '' then
-    redis.call('SADD', notice, socketId)
-    redis.call('PEXPIRE', notice, ${String(noticeDeliveryRetentionMs)})
-  end
-  return published
 end
 if (operation == 'join' or operation == 'evict') and epoch ~= expectedEpoch then return false end
 if requestId ~= '' and redis.call('HGET', socket, 'lastRequest') == requestId then

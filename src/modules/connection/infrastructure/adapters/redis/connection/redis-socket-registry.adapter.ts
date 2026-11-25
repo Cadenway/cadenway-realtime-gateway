@@ -42,6 +42,8 @@ interface RedisRegistryCommands {
 }
 
 const maximumHandoffBytes = 8_192;
+const markNoticeScript =
+  "redis.call('SADD', KEYS[1], ARGV[1]); redis.call('PEXPIRE', KEYS[1], 86400000); return 1";
 const socketScriptDigest = createHash('sha1').update(socketRegistryScript).digest('hex');
 const markerScriptDigest = createHash('sha1').update(markSocketInvalidationScript).digest('hex');
 const organizationLeaseDigest = createHash('sha1')
@@ -177,6 +179,20 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     }
   }
 
+  /** Records an emitted notice for later redeliveries, retaining progress for 24 hours. */
+  public async markNoticeDelivered(
+    organizationId: string,
+    noticeId: string,
+    socketId: string,
+  ): Promise<void> {
+    await this.run(
+      markNoticeScript,
+      createHash('sha1').update(markNoticeScript).digest('hex'),
+      [noticeKey(organizationId, noticeId)],
+      [socketId],
+    );
+  }
+
   /** Atomically validates the registration and publishes a bounded notice to its owning replica. */
   public async publish(
     socketId: string,
@@ -186,7 +202,7 @@ export class RedisSocketRegistry implements SocketRegistryPort {
     packet: unknown,
     noticeId?: string,
   ): Promise<boolean> {
-    const delivery = JSON.stringify({ socketId, room, fence, packet });
+    const delivery = JSON.stringify({ socketId, room, fence, packet, noticeId });
     if (Buffer.byteLength(delivery) > maximumHandoffBytes) {
       throw new Error('Realtime delivery is too large.');
     }
