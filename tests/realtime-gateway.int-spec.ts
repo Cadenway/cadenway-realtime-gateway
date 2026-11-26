@@ -9,7 +9,9 @@ import { EventPublisher, MessagingModule } from '@cadenway/nest-messaging';
 import {
   COMMENT_CREATED_V1,
   eventSchemas,
+  GIT_LINK_UPDATED_V1,
   GIT_PR_OPENED_V1,
+  GIT_PR_REOPENED_V1,
   LIST_ACCESS_CHANGED_V1,
   SESSION_REVOKED_V1,
   TASK_CREATED_V1,
@@ -1307,6 +1309,87 @@ describe('realtime relay across two instances', () => {
     );
     await delay(300);
     expect(received).toHaveLength(1);
+    expect(foreign).toEqual([]);
+  }, 40_000);
+
+  it('relays a Git reopen and a Git link update to the authorized organization only', async () => {
+    const readerId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b43';
+    const outsiderId = '019a5f3c-8d2e-7c4a-9b1f-3e5d7a9c1b44';
+    upstream.issue('w'.repeat(43), session(readerId, organizationId), true);
+    upstream.issue('x'.repeat(43), session(outsiderId, otherOrganizationId), true);
+    const [reader, outsider] = await Promise.all([
+      connect(first.url, 'w'.repeat(43)),
+      connect(second.url, 'x'.repeat(43)),
+    ]);
+    expect(await join(reader)).toEqual({ ok: true });
+    expect(await join(outsider)).toEqual({ ok: false, code: 'room.not-found' });
+    const received: unknown[] = [];
+    const foreign: unknown[] = [];
+    reader.on('change', (packet: unknown) => {
+      if ((packet as { type?: string }).type === 'git.links-changed.v1') received.push(packet);
+    });
+    outsider.on('change', (packet: unknown) => {
+      if ((packet as { type?: string }).type === 'git.links-changed.v1') foreign.push(packet);
+    });
+
+    const publisher = publisherContext.get(EventPublisher);
+    const link = {
+      organizationId,
+      actor: { type: 'git', id: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e01' },
+      taskKey,
+      spaceId,
+      listId,
+      gitLinkId: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e04',
+    } as const;
+    const reopened = eventSchemas[GIT_PR_REOPENED_V1].parse({
+      ...link,
+      id: '019a7005-6f7a-7b8c-9d0e-1f2a3b4c5d54',
+      occurredAt: '2026-11-08T11:02:00Z',
+      version: 3,
+      changed: ['state'],
+    });
+    const updated = eventSchemas[GIT_LINK_UPDATED_V1].parse({
+      ...link,
+      id: '019a7005-6f7a-7b8c-9d0e-1f2a3b4c5d55',
+      occurredAt: '2026-11-08T11:05:00Z',
+      version: 4,
+      changed: ['draft', 'reviewRequested'],
+    });
+    await publisher.publishEnvelope({
+      name: GIT_PR_REOPENED_V1,
+      subject: 'evt.git.pr-reopened.v1',
+      stream: 'EVENTS',
+      payload: reopened,
+      traceparent: null,
+    });
+    await publisher.publishEnvelope({
+      name: GIT_LINK_UPDATED_V1,
+      subject: 'evt.git.link-updated.v1',
+      stream: 'EVENTS',
+      payload: updated,
+      traceparent: null,
+    });
+    expect(await waitFor(() => Promise.resolve(received.length), 2)).toBe(2);
+    expect(received).toEqual(
+      expect.arrayContaining([
+        {
+          id: reopened.id,
+          type: 'git.links-changed.v1',
+          at: reopened.occurredAt,
+          version: 1,
+          data: { taskId },
+        },
+        {
+          id: updated.id,
+          type: 'git.links-changed.v1',
+          at: updated.occurredAt,
+          version: 1,
+          data: { taskId },
+        },
+      ]),
+    );
+    await delay(300);
+    expect(received).toHaveLength(2);
     expect(foreign).toEqual([]);
   }, 40_000);
 
