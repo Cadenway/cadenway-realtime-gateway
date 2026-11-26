@@ -47,7 +47,8 @@ volatile. List decisions are shared per session, session version, role and visib
 socket retains its own fence through delivery. A failed handoff stops when the fence is absent or
 unchanged and retries authorization only when it moved.
 
-The five Git branch, pull request and checks facts produce `git.links-changed.v1` notices.
+The seven Git branch, pull request, reopen, checks and link update facts produce
+`git.links-changed.v1` notices.
 Each notice carries only the current authorized task ID and uses browser protocol version 1.
 The Git subscriptions start only when `REALTIME_GIT_RELAYS_ENABLED` is enabled after the
 broker grants the realtime identity access to their durable consumers.

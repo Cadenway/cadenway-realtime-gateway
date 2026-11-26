@@ -113,17 +113,21 @@ describe('RelayEventsHandler', () => {
         ['relay-git-pr-merged', 'git.pr-merged.v1'],
         ['relay-git-pr-closed', 'git.pr-closed.v1'],
         ['relay-git-checks-completed', 'git.checks-completed.v1'],
+        ['relay-git-pr-reopened', 'git.pr-reopened.v1'],
+        ['relay-git-link-updated', 'git.link-updated.v1'],
       ],
     );
   });
 
   it.each([
-    'git.branch-created.v1',
-    'git.pr-opened.v1',
-    'git.pr-merged.v1',
-    'git.pr-closed.v1',
-    'git.checks-completed.v1',
-  ])('projects %s as a version-one Git invalidation', async (event) => {
+    ['git.branch-created.v1', ['branch']],
+    ['git.pr-opened.v1', ['state']],
+    ['git.pr-merged.v1', ['state']],
+    ['git.pr-closed.v1', ['state']],
+    ['git.checks-completed.v1', ['checks']],
+    ['git.pr-reopened.v1', ['state']],
+    ['git.link-updated.v1', ['draft', 'reviewRequested']],
+  ])('projects %s as a version-one Git invalidation', async (event, changed) => {
     const { handler, subscriptions, execute } = setup();
     await handler.onApplicationBootstrap();
     const subscription = subscriptions.find((candidate) => candidate.event === event);
@@ -139,7 +143,7 @@ describe('RelayEventsHandler', () => {
       listId: 'LIST-A',
       actor: { type: 'git', id: 'integration-a' },
       gitLinkId: 'link-a',
-      changed: ['state'],
+      changed,
     };
     await subscription?.handle(fact as never, { signal });
     expect(execute).toHaveBeenCalledExactlyOnceWith(

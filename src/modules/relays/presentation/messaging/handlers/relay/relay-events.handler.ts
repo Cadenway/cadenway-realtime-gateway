@@ -2,9 +2,11 @@ import {
   COMMENT_CREATED_V1,
   GIT_BRANCH_CREATED_V1,
   GIT_CHECKS_COMPLETED_V1,
+  GIT_LINK_UPDATED_V1,
   GIT_PR_CLOSED_V1,
   GIT_PR_MERGED_V1,
   GIT_PR_OPENED_V1,
+  GIT_PR_REOPENED_V1,
   LIST_ACCESS_CHANGED_V1,
   LIST_DELETED_V1,
   MEMBER_REMOVED_V1,
@@ -342,6 +344,8 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       ['relay-git-pr-merged', GIT_PR_MERGED_V1],
       ['relay-git-pr-closed', GIT_PR_CLOSED_V1],
       ['relay-git-checks-completed', GIT_CHECKS_COMPLETED_V1],
+      ['relay-git-pr-reopened', GIT_PR_REOPENED_V1],
+      ['relay-git-link-updated', GIT_LINK_UPDATED_V1],
     ] as const) {
       await this.consumers.subscribe({
         handler,
