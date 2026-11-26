@@ -347,8 +347,11 @@ export class RelayEventsHandler implements OnApplicationBootstrap {
       ['relay-git-pr-reopened', GIT_PR_REOPENED_V1],
       ['relay-git-link-updated', GIT_LINK_UPDATED_V1],
     ] as const) {
+      // A Git durable created on first deployment starts at new facts: replaying retained history
+      // would only send obsolete invalidations. An existing durable keeps its position.
       await this.consumers.subscribe({
         handler,
+        deliverPolicy: 'new',
         schemas: eventSchemas,
         event,
         handle: (fact, { signal }) => {

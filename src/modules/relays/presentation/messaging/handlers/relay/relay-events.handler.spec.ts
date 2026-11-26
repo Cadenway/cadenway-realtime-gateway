@@ -229,6 +229,14 @@ describe('RelayEventsHandler', () => {
     expect(listTasksExecute).not.toHaveBeenCalled();
   });
 
+  it('starts the Git durables at new facts', async () => {
+    const { handler, subscriptions } = setup();
+    await handler.onApplicationBootstrap();
+    const git = subscriptions.filter((item) => item.handler.startsWith('relay-git-'));
+    expect(git).toHaveLength(7);
+    for (const subscription of git) expect(subscription.deliverPolicy).toBe('new');
+  });
+
   it('starts new list durables at new facts with the extended retry schedule', async () => {
     const { handler, subscriptions } = setup();
     await handler.onApplicationBootstrap();
